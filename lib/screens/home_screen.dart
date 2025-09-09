@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../models/project.dart';
 import '../models/hub.dart';
 import '../models/hub_member.dart';
@@ -10,9 +9,10 @@ import '../widgets/ai_assistant_panel.dart';
 import '../widgets/project_sidebar.dart';
 import '../widgets/add_edit_project_dialog.dart';
 import 'hub_management_screen.dart';
-import 'initial_hub_screen.dart'; // ✨ --- Import for navigation --- ✨
-import 'dart:async'; // ✨ --- Import for StreamSubscription --- ✨
+import 'initial_hub_screen.dart';
+import 'dart:async';
 
+enum HubLoadState { loading, loaded, error }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,53 +27,92 @@ class _HomeScreenState extends State<HomeScreen> {
   Hub? _currentHub;
   HubMember? _myMembership;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey<BugTrackerViewState> _bugTrackerKey = GlobalKey<BugTrackerViewState>();
 
-  // ✨ --- Stream subscription to listen for membership changes (kick event) --- ✨
-  StreamSubscription? _membershipSubscription;
+  HubLoadState _hubLoadState = HubLoadState.loading;
+
+  StreamSubscription? _hubMembersSubscription;
+  StreamSubscription? _hubSubscription;
+  Timer? _kickCheckTimer;
 
   bool get _isLeader => _myMembership?.role == 'leader';
 
   @override
   void initState() {
     super.initState();
-    _loadHubInfo();
+    _loadHubInfoWithRetry();
   }
 
   @override
   void dispose() {
-    // ✨ --- Cancel the subscription to prevent memory leaks --- ✨
-    _membershipSubscription?.cancel();
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    _kickCheckTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadHubInfo() async {
-    try {
-      final hub = await _supabaseService.getHubForUser();
-      if (hub != null && mounted) {
-        final currentUserId = _supabaseService.currentUserId;
-        final member = await _supabaseService.getMemberInfo(hub.id);
+  Future<void> _loadHubInfoWithRetry({int retries = 3}) async {
+    if (!mounted) return;
 
-        setState(() {
-          _currentHub = hub;
-          _myMembership = member;
-        });
+    setState(() {
+      _hubLoadState = HubLoadState.loading;
+    });
 
-        // ✨ --- Start listening for membership changes after loading hub info --- ✨
-        _listenForKickEvents(hub.id);
-
-      } else if (hub == null && mounted) {
-        // This case handles if the user's hub was deleted while they were away
-        _handleKicked(wasKicked: false);
+    for (int i = 0; i < retries; i++) {
+      try {
+        final hub = await _supabaseService.getHubForUser();
+        if (hub != null && mounted) {
+          final member = await _supabaseService.getMemberInfo(hub.id);
+          if (member != null) {
+            setState(() {
+              _currentHub = hub;
+              _myMembership = member;
+              _hubLoadState = HubLoadState.loaded;
+            });
+            _setupRealtimeListeners(hub.id);
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('Error loading hub info (attempt ${i + 1}): $e');
       }
-    } catch (e) {
-      print("Error loading hub info: $e");
+
+      if (i < retries - 1) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _hubLoadState = HubLoadState.error;
+      });
+      _handleHubDeleted();
     }
   }
 
-  // ✨ --- Function to handle being kicked from a hub --- ✨
-  void _handleKicked({bool wasKicked = true}) async {
-    // Cancel listener to prevent multiple triggers
-    _membershipSubscription?.cancel();
+  void _handleMemberKicked() {
+    _cleanupAndNavigate(
+      title: 'تم طردك',
+      content:
+          'لقد تم إزالتك من الـ Hub. يجب عليك الانضمام إلى hub جديد أو إنشاء واحد.',
+    );
+  }
+
+  void _handleHubDeleted() {
+    _cleanupAndNavigate(
+      title: 'Hub لم يعد موجوداً',
+      content:
+          'يبدو أن الـ Hub الذي كنت فيه قد تم حذفه. يجب عليك الانضمام أو إنشاء hub جديد.',
+    );
+  }
+
+  void _cleanupAndNavigate(
+      {required String title, required String content}) async {
+    if (!mounted) return;
+
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    _kickCheckTimer?.cancel();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('hub_setup_complete', false);
@@ -82,12 +121,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showDialog(
       context: context,
-      barrierDismissible: false, // User must interact with the dialog
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: Text(wasKicked ? 'تم طردك' : 'Hub لم يعد موجوداً'),
-        content: Text(wasKicked
-          ? 'لقد تم إزالتك من الـ Hub. يجب عليك الانضمام إلى hub جديد أو إنشاء واحد.'
-          : 'يبدو أن الـ Hub الذي كنت فيه قد تم حذفه. يجب عليك الانضمام أو إنشاء hub جديد.'),
+        title: Text(title),
+        content: Text(content),
         actions: [
           TextButton(
             onPressed: () {
@@ -103,18 +140,59 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ✨ --- Sets up the real-time listener for the user's membership status --- ✨
-  void _listenForKickEvents(String hubId) {
-    _membershipSubscription?.cancel(); // Cancel previous subscription if any
-    _membershipSubscription = _supabaseService.getMyMembershipStream(hubId).listen((member) {
+  Future<void> _checkIfKicked() async {
+    if (_currentHub == null || !mounted) return;
+
+    try {
+      final member = await _supabaseService.getMemberInfo(_currentHub!.id);
       if (member == null && mounted) {
-        _handleKicked();
-      } else if (mounted) {
-        // Update membership info in real-time if permissions change
-        setState(() {
-          _myMembership = member;
-        });
+        _handleMemberKicked();
       }
+    } catch (e) {
+      debugPrint("Error during periodic kick check: $e");
+    }
+  }
+
+  void _setupRealtimeListeners(String hubId) {
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    _kickCheckTimer?.cancel();
+
+    _hubMembersSubscription =
+        _supabaseService.getHubMembersStream(hubId).listen((membersList) {
+      if (!mounted) return;
+
+      final currentUserStillAMember = membersList
+          .any((m) => m['user_id'] == _supabaseService.currentUserId);
+
+      if (currentUserStillAMember) {
+        final myData = membersList
+            .firstWhere((m) => m['user_id'] == _supabaseService.currentUserId);
+        if (mounted) {
+          setState(() {
+            _myMembership = HubMember.fromJson(myData);
+          });
+        }
+      } else {
+        _handleMemberKicked();
+      }
+    });
+
+    _hubSubscription = _supabaseService.getHubStream(hubId).listen((hub) {
+      if (!mounted) return;
+      if (hub == null) {
+        _handleHubDeleted();
+      } else {
+        if (mounted) {
+          setState(() {
+            _currentHub = hub;
+          });
+        }
+      }
+    });
+
+    _kickCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _checkIfKicked();
     });
   }
 
@@ -123,41 +201,77 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedProject = project;
     });
   }
-  
+
   void _editProject(Project project) {
-     // Permission check moved to BugTrackerView where the button is
-     showDialog(
+    showDialog(
       context: context,
       builder: (context) => AddEditProjectDialog(
         project: project,
         onProjectSaved: (isNew) async {
-           // Refresh the project list and update the selected project
-           final projects = await _supabaseService.getProjects();
-           setState(() {
-               _selectedProject = projects.firstWhere((p) => p.id == project.id, orElse: () => project);
-           });
+          final projects = await _supabaseService.getProjects();
+          setState(() {
+            _selectedProject = projects.firstWhere((p) => p.id == project.id,
+                orElse: () => project);
+          });
         },
       ),
     );
   }
 
+  Future<void> _confirmAndLeaveHub() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تأكيد المغادرة'),
+        content: const Text(
+            'هل أنت متأكد من رغبتك في مغادرة هذا الـ Hub؟ ستحتاج إلى رمز سري جديد للانضمام مرة أخرى.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('مغادرة', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && _myMembership != null) {
+      try {
+        await _supabaseService.leaveHub(_myMembership!.id);
+        _cleanupAndNavigate(
+            title: 'لقد غادرت', content: 'لقد غادرت الـ Hub بنجاح.');
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text('فشل في المغادرة: $e'),
+                backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+  
   void _showHubInfo() {
     if (_currentHub == null) return;
-     showDialog(
+    showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('معلومات Hub: ${_currentHub!.name}'),
         content: Column(
-           mainAxisSize: MainAxisSize.min,
-           crossAxisAlignment: CrossAxisAlignment.start,
-           children: [
-              const Text('الرمز السري لمشاركة الفريق:'),
-              const SizedBox(height: 8),
-              SelectableText(
-                _currentHub!.secretCode,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-           ],
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('الرمز السري لمشاركة الفريق:'),
+            const SizedBox(height: 8),
+            SelectableText(
+              _currentHub!.secretCode,
+              style:
+                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+          ],
         ),
         actions: [
           if (_isLeader)
@@ -166,7 +280,20 @@ class _HomeScreenState extends State<HomeScreen> {
               label: const Text('إدارة الأعضاء'),
               onPressed: () {
                 Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (context) => HubManagementScreen(hub: _currentHub!)));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) =>
+                            HubManagementScreen(hub: _currentHub!)));
+              },
+            ),
+          if (!_isLeader)
+            TextButton.icon(
+              icon: Icon(Icons.exit_to_app, color: Colors.red.shade400),
+              label: Text('مغادرة الـ Hub', style: TextStyle(color: Colors.red.shade400)),
+              onPressed: () {
+                Navigator.pop(context); 
+                _confirmAndLeaveHub();
               },
             ),
           TextButton(
@@ -174,19 +301,43 @@ class _HomeScreenState extends State<HomeScreen> {
             child: const Text('إغلاق'),
           )
         ],
-      )
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_hubLoadState == HubLoadState.loading) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('جاري تحميل بيانات الفريق...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
         title: Text(_selectedProject?.name ?? _currentHub?.name ?? 'DevNest'),
         actions: [
+          // --- ✨ تعديل (1): إضافة زر تحديث يظهر عند اختيار مشروع --- ✨
+          if (_selectedProject != null)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                _bugTrackerKey.currentState?.refreshBugs();
+              },
+              tooltip: 'تحديث قائمة الأخطاء',
+            ),
           if (_currentHub != null)
-             IconButton(
+            IconButton(
               icon: const Icon(Icons.hub_outlined),
               onPressed: _showHubInfo,
               tooltip: 'معلومات الـ Hub',
@@ -214,14 +365,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.rule_folder_outlined, size: 100, color: Colors.grey[700]),
+                    Icon(Icons.rule_folder_outlined,
+                        size: 100, color: Colors.grey[700]),
                     const SizedBox(height: 24),
                     Text(
                       'الرجاء اختيار مشروع من القائمة للبدء',
                       style: Theme.of(context).textTheme.titleMedium,
                       textAlign: TextAlign.center,
                     ),
-                     const SizedBox(height: 8),
+                    const SizedBox(height: 8),
                     Text(
                       'أو قم بإنشاء مشروع جديد',
                       style: Theme.of(context).textTheme.bodySmall,
@@ -232,6 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             )
           : BugTrackerView(
+              key: _bugTrackerKey,
               project: _selectedProject!,
               onEditProject: () => _editProject(_selectedProject!),
               myMembership: _myMembership,

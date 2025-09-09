@@ -66,7 +66,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
               Navigator.pop(context);
               setState(() => _isLoading = true);
               try {
-                // ✨ --- Pass the display name when creating a hub --- ✨
                 final secretCode = await _supabaseService.createHub(
                     hubNameController.text.trim(), _nameController.text.trim());
                 await _showHubCreatedDialog(hubNameController.text.trim(), secretCode);
@@ -145,13 +144,17 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
               Navigator.pop(context);
               setState(() => _isLoading = true);
               try {
-                 // ✨ --- Pass the display name when joining a hub --- ✨
                 await _supabaseService.joinHub(
                     codeController.text.trim(), _nameController.text.trim());
                 await _navigateToHome();
               } catch (e) {
-                final errorMessage =
-                    e.toString().replaceFirst('Exception: ', '');
+                // --- ✨ تعديل: تحسين رسائل الخطأ لتكون أوضح للمستخدم ---
+                var errorMessage = e.toString().replaceFirst('Exception: ', '');
+                if (errorMessage.contains('Hub not found with this secret code')) {
+                  errorMessage = 'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
+                } else if (errorMessage.contains('You are already a member of this hub')) {
+                  errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
+                }
                 _showError('فشل الانضمام: $errorMessage');
               } finally {
                 if (mounted) setState(() => _isLoading = false);
@@ -189,7 +192,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 32),
-                      // ✨ --- Text field for display name --- ✨
                       TextField(
                         controller: _nameController,
                         decoration: const InputDecoration(
@@ -205,7 +207,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                       const SizedBox(height: 32),
                       SizedBox(
                         width: double.infinity,
-                        // ✨ --- Button is disabled until a name is entered --- ✨
                         child: ElevatedButton.icon(
                           icon: const Icon(Icons.add_circle_outline),
                           label: const Text('إنشاء Hub جديد'),
@@ -217,7 +218,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
-                         // ✨ --- Button is disabled until a name is entered --- ✨
                         child: OutlinedButton.icon(
                           icon: const Icon(Icons.login),
                           label: const Text('الانضمام إلى Hub'),

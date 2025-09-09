@@ -22,31 +22,40 @@ class SupabaseService {
       8, (_) => chars.codeUnitAt(random.nextInt(chars.length))));
   }
 
-  // ✨ --- Modified to accept display name --- ✨
   Future<String> createHub(String name, String displayName) async {
     if (currentUserId == null) throw Exception('User not logged in');
     final secretCode = _generateSecretCode();
 
     try {
+      await _client
+        .from('hub_members')
+        .delete()
+        .eq('user_id', currentUserId!);
+
       await _client.rpc('create_hub_and_add_leader', params: {
         'hub_name': name,
         'secret_code': secretCode,
+        'leader_display_name': displayName,
       });
 
-      // After the RPC creates the member, update their display name
       await _client
-          .from('hub_members')
-          .update({'display_name': displayName})
-          .eq('user_id', currentUserId!);
+        .from('hub_members')
+        .update({
+          'can_add_bugs': true,
+          'can_edit_bugs': true,
+          'can_use_chat': true,
+          'can_manage_projects': true,
+        })
+        .eq('user_id', currentUserId!)
+        .eq('role', 'leader'); 
       
       return secretCode;
     } catch (e) {
       debugPrint('Error creating hub: $e');
-      throw Exception('Failed to create hub. There might be a server error.');
+      throw Exception('Failed to create hub. A server error occurred.');
     }
   }
-
-  // ✨ --- Modified to accept display name --- ✨
+  
   Future<void> joinHub(String secretCode, String displayName) async {
     if (currentUserId == null) throw Exception('User not logged in');
     final upperCaseSecretCode = secretCode.toUpperCase();
@@ -62,7 +71,6 @@ class SupabaseService {
     }
     final hubId = hubResponse['id'];
 
-    // Check if user is already a member
      final existingMembership = await _client
         .from('hub_members')
         .select('id')
@@ -74,29 +82,48 @@ class SupabaseService {
       throw Exception('You are already a member of this hub.');
     }
 
+    await _client
+        .from('hub_members')
+        .delete()
+        .eq('user_id', currentUserId!);
+
     await _client.from('hub_members').insert({
       'hub_id': hubId,
       'user_id': currentUserId,
       'role': 'member',
-      'display_name': displayName, // Add display name on join
+      'display_name': displayName,
     });
   }
 
   Future<Hub?> getHubForUser() async {
     if (currentUserId == null) return null;
     try {
-      final response = await _client.rpc('get_user_hub');
-      if (response is List && response.isNotEmpty) {
-        return Hub.fromJson(response[0]);
+      final memberResponse = await _client
+          .from('hub_members')
+          .select('hub_id')
+          .eq('user_id', currentUserId!)
+          .maybeSingle();
+
+      if (memberResponse == null || memberResponse['hub_id'] == null) {
+        return null;
       }
-      return null;
+
+      final hubId = memberResponse['hub_id'];
+
+      final hubResponse = await _client
+          .from('hubs')
+          .select()
+          .eq('id', hubId)
+          .single(); 
+
+      return Hub.fromJson(hubResponse);
+
     } catch (e) {
-      debugPrint('Error getting user hub: $e');
+      debugPrint('Error getting user hub info manually: $e');
       return null;
     }
   }
   
-  // ✨ --- New function to get a single member's info --- ✨
   Future<HubMember?> getMemberInfo(String hubId) async {
     if (currentUserId == null) return null;
     final response = await _client
@@ -116,24 +143,25 @@ class SupabaseService {
       .eq('hub_id', hubId);
     return response.map((json) => HubMember.fromJson(json)).toList();
   }
-
-  // ✨ --- Real-time stream for the current user's membership --- ✨
-  // NOTE: This function relies on Row Level Security (RLS) being enabled on the `hub_members` table.
-  // The RLS policy should ensure that users can only SELECT their own membership row.
-  Stream<HubMember?> getMyMembershipStream(String hubId) {
+  
+  Stream<List<Map<String, dynamic>>> getHubMembersStream(String hubId) {
     return _client
         .from('hub_members')
         .stream(primaryKey: ['id'])
-        // RLS handles filtering by the current user_id on the database side.
-        // We only need to filter by the hub_id on the client stream.
-        .eq('hub_id', hubId)
-        .map((maps) {
-          if (maps.isEmpty) {
-            return null; // The user has been removed (kicked)
-          }
-          // Because of RLS, maps will contain at most one item: the user's own membership.
-          return HubMember.fromJson(maps.first); // Return the member object
-        });
+        .eq('hub_id', hubId);
+  }
+
+  Stream<Hub?> getHubStream(String hubId) {
+    return _client
+        .from('hubs')
+        .stream(primaryKey: ['id'])
+        .eq('id', hubId)
+        .map((listOfHubMaps) {
+      if (listOfHubMaps.isEmpty) {
+        return null; 
+      }
+      return Hub.fromJson(listOfHubMaps.first);
+    });
   }
 
   Future<void> updateMemberPermissions({
@@ -162,6 +190,31 @@ class SupabaseService {
   }
 
   Future<void> removeMember(int memberId) async {
+    final memberData = await _client
+        .from('hub_members')
+        .select('hub_id')
+        .eq('id', memberId)
+        .maybeSingle();
+
+    if (memberData == null) {
+      throw Exception('Member not found.');
+    }
+    final hubId = memberData['hub_id'];
+
+    await _client
+      .from('hub_members')
+      .delete()
+      .eq('id', memberId);
+
+    final newSecretCode = _generateSecretCode();
+    await _client
+      .from('hubs')
+      .update({'secret_code': newSecretCode})
+      .eq('id', hubId);
+  }
+  
+  // --- تعديل (2): إضافة دالة مغادرة الـ Hub ---
+  Future<void> leaveHub(int memberId) async {
     await _client
       .from('hub_members')
       .delete()
@@ -267,7 +320,6 @@ class SupabaseService {
       return response.map((map) => AiChatMessage.fromJson(map)).toList().reversed.toList();
   }
 
-  // ✨ --- New function to clear chat history --- ✨
   Future<void> clearChatHistory(String projectId) async {
     await _client
       .from('ai_chat_messages')
@@ -275,4 +327,3 @@ class SupabaseService {
       .eq('project_id', projectId);
   }
 }
-

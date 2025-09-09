@@ -27,7 +27,6 @@ class GeminiService {
       systemContext += '\n--- سياق المشروع الحالي ---\n';
       systemContext += 'الاسم: ${project.name}\n';
       systemContext += 'الوصف: ${project.description ?? "لا يوجد"}\n';
-      // --- تعديل: تم حذف الحقول الإضافية من سياق الذكاء الاصطناعي ---
       systemContext += 'رابط GitHub: ${project.githubUrl ?? "غير محدد"}\n';
 
 
@@ -90,33 +89,95 @@ class GeminiService {
     }
   }
 
-  Future<String> getBugSolution(String bugTitle, String bugDescription) async {
+  // --- ✨ تعديل: البرومبت الآن يطلب من النموذج إعادة رد بصيغة JSON منظمة --- ✨
+  Future<String> analyzeBugWithCodeContext({
+    required String bugTitle,
+    required String bugDescription,
+    required String codeContext,
+  }) async {
     final prompt = '''
-أنت مطور برامج خبير ومتخصص في تصحيح الأخطاء.
-بالنظر إلى وصف الخطأ التالي، قدم حلاً مفصلاً وواضحاً باللغة العربية.
-اشرح الأسباب المحتملة للخطأ، وقدم خطوات عملية لإصلاحه، مع أمثلة برمجية إذا أمكن.
-إذا كان هناك توثيق رسمي مفيد، قم بتضمين رابط إليه.
+أنت "مساعد DevNest"، مهندس برمجيات وخبير في تحليل الأكواد متخصص في اكتشاف الأخطاء وحلها. مهمتك هي تحليل الخطأ التالي في سياق الكود المرفق.
 
-عنوان الخطأ: "$bugTitle"
-وصف الخطأ: "$bugDescription"
+**مهم جداً: يجب أن يكون ردك بالكامل عبارة عن كائن JSON صالح واحد فقط. لا تقم بإضافة أي نص قبل أو بعد كائن JSON.**
+
+يجب أن يتبع كائن JSON الهيكل الدقيق التالي:
+{
+  "verbalAnalysis": "string",
+  "codeSuggestions": "string",
+  "professionalPrompt": "string"
+}
+
+**إرشادات المحتوى:**
+
+1.  **"verbalAnalysis"**:
+    * قدم شرحاً ودياً وحوارياً وواضحاً للخطأ باللغة العربية.
+    * ابدأ بتصنيف الخطأ (مثال: خطأ حرج، خطأ بسيط، تحسين).
+    * اشرح السبب الجذري للمشكلة ببساطة.
+    * اذكر الحل المقترح بإيجاز دون عرض أي كود برمجي.
+    * اجعل النص موجزاً وسهل الفهم.
+
+2.  **"codeSuggestions"**:
+    * قدم تفصيلاً فنياً للتغييرات البرمجية المطلوبة باللغة العربية.
+    * استخدم الماركداون للتنسيق.
+    * لكل ملف يحتاج إلى تغيير، أنشئ قسماً باستخدام `## اسم الملف: path/to/file.dart`.
+    * تحت كل ملف، حدد الموقع الدقيق للتغيير (مثال: `**الموقع:** داخل دالة `build`).
+    * قدم مقتطف الكود الكامل والصحيح داخل قسم ماركداون للكود (```dart ... ```).
+
+3.  **"professionalPrompt"**:
+    * أنشئ برومبت احترافياً وشاملاً ومفصلاً باللغة العربية، جاهز للنسخ واللصق في مساعد ذكاء اصطناعي آخر (مثل GPT-4 أو Claude).
+    * يجب أن يبدأ البرومبت بهدف واضح (مثال: "أحتاج إلى حل مشكلة برمجية في تطبيقي المبني بـ Flutter.").
+    * يجب أن يتضمن:
+        * عنوان الخطأ ووصفه التفصيلي.
+        * السلوك المتوقع مقابل السلوك الفعلي.
+        * أي رسائل خطأ ذات صلة.
+        * توجيه نهائي، مثل "الرجاء تقديم الحل المقترح مع شرح للكود."
+        * يجب أن يتضمن أيضاً ملاحظة لمطالبة المستخدم بإرفاق الملفات ذات الصلة في الشات لتسهيل التحليل.
+
+---
+**معلومات الخطأ:**
+- **العنوان:** "$bugTitle"
+- **الوصف:** "$bugDescription"
+
+---
+**الكود المصدري للمشروع:**
+```
+$codeContext
+```
+---
+
+تذكر، أجب فقط بكائن JSON الخام.
 ''';
     try {
       final response = await http.post(
         Uri.parse(_apiUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'contents': [{'parts': [{'text': prompt}]}]
+          'contents': [{'parts': [{'text': prompt}]}],
+           // ✨ إضافة: ضبط إعدادات النموذج لضمان إخراج JSON
+          'generationConfig': {
+            'responseMimeType': 'application/json',
+          }
         }),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        // النص الآن موجود مباشرة داخل 'text'
         return data['candidates'][0]['content']['parts'][0]['text'];
       } else {
-        return "عذراً، لم أتمكن من الحصول على اقتراح. رمز الحالة: ${response.statusCode}";
+        return jsonEncode({
+          "verbalAnalysis": "عذراً، لم أتمكن من الحصول على اقتراح. رمز الحالة: ${response.statusCode}",
+          "codeSuggestions": "Error: ${response.statusCode}\n${response.body}",
+          "professionalPrompt": "الرجاء المساعدة في حل مشكلة أدت إلى رمز الحالة ${response.statusCode} عند محاولة تحليل الخطأ."
+        });
       }
     } catch (e) {
-      return "عذراً، حدث استثناء: $e";
+       return jsonEncode({
+          "verbalAnalysis": "عذراً، حدث استثناء أثناء محاولة تحليل الخطأ.",
+          "codeSuggestions": "Exception: ${e.toString()}",
+          "professionalPrompt": "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي: ${e.toString()}"
+        });
     }
   }
 }
+

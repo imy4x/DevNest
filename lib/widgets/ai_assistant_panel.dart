@@ -110,6 +110,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   }
 
   Future<void> _sendMessage() async {
+    // --- تعديل (3): تم نقل التحقق من الصلاحية إلى هنا ---
     final canChat = widget.myMembership?.canUseChat ?? false;
     if (!canChat) {
       showPermissionDeniedDialog(context);
@@ -122,6 +123,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     final userMessage = _controller.text.trim();
     final projectId = widget.projectContext!.id;
     _controller.clear();
+    FocusScope.of(context).unfocus(); // إخفاء لوحة المفاتيح بعد الإرسال
 
     await _supabaseService.addChatMessage(
         projectId: projectId, role: 'user', content: userMessage);
@@ -149,8 +151,14 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     _scrollToBottom();
   }
 
-  // ✨ --- Function to clear chat history --- ✨
   Future<void> _clearChatHistory() async {
+    // --- تعديل (3): إضافة التحقق من صلاحية القائد هنا ---
+    final bool isLeader = widget.myMembership?.role == 'leader';
+    if (!isLeader) {
+      showPermissionDeniedDialog(context);
+      return;
+    }
+
     if (widget.projectContext == null) return;
 
     final confirm = await showDialog<bool>(
@@ -189,121 +197,135 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   @override
   Widget build(BuildContext context) {
     final bool hasProject = widget.projectContext != null;
-    final bool canChat = widget.myMembership?.canUseChat ?? false;
-    // ✨ --- Check if the user is the leader --- ✨
-    final bool isLeader = widget.myMembership?.role == 'leader';
-
+    
+    // --- تعديل (2): إضافة Scaffold للتعامل مع لوحة المفاتيح ---
     return Drawer(
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // ✨ --- Clear chat button, only visible to the leader --- ✨
-                  if(isLeader && hasProject)
-                    IconButton(
-                      icon: const Icon(Icons.delete_sweep_outlined),
-                      onPressed: _clearChatHistory,
-                      tooltip: 'مسح سجل المحادثة',
-                    )
-                  else
-                    const SizedBox(width: 48), // Placeholder for alignment
-                  
-                  Column(
+      child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        backgroundColor: Theme.of(context).drawerTheme.backgroundColor,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // --- تعديل (3): إظهار الزر دائماً والتحقق من الصلاحية عند الضغط ---
+                    if(hasProject)
+                      IconButton(
+                        icon: const Icon(Icons.delete_sweep_outlined),
+                        onPressed: _clearChatHistory,
+                        tooltip: 'مسح سجل المحادثة',
+                      )
+                    else
+                      const SizedBox(width: 48),
+                    
+                    Column(
+                      children: [
+                        Text('المساعد الذكي', style: Theme.of(context).textTheme.headlineSmall),
+                        if (hasProject)
+                          Text('مشروع: ${widget.projectContext!.name}',
+                              style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                    ),
+                    const SizedBox(width: 48),
+                  ],
+                ),
+                const Divider(height: 24),
+                if (_isAnalyzingCode)
+                  const Padding(
+                      padding: EdgeInsets.only(bottom: 12.0),
+                      child: Column(
+                        children: [
+                          LinearProgressIndicator(),
+                          SizedBox(height: 4),
+                          Text('جاري قراءة الملفات...')
+                        ],
+                      )),
+                Expanded(
+                  child: !hasProject
+                      ? const Center(
+                          child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
+                      : StreamBuilder<List<AiChatMessage>>(
+                          stream: _chatStream,
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState ==
+                                    ConnectionState.waiting &&
+                                !snapshot.hasData) {
+                              return const Center(
+                                  child: CircularProgressIndicator());
+                            }
+                            if (snapshot.hasError) {
+                              return Center(
+                                  child: Text(
+                                      'خطأ في تحميل المحادثة: ${snapshot.error}'));
+                            }
+
+                            final messages = snapshot.data ?? [];
+
+                            if (messages.isEmpty && !_isLoading) {
+                              return const Center(
+                                  child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
+                            }
+
+                            WidgetsBinding.instance
+                                .addPostFrameCallback((_) => _scrollToBottom());
+
+                            final itemCount =
+                                messages.length + (_isLoading ? 1 : 0);
+
+                            return ListView.builder(
+                              controller: _scrollController,
+                              itemCount: itemCount,
+                              itemBuilder: (context, index) {
+                                if (index == messages.length && _isLoading) {
+                                  return _buildTypingIndicator();
+                                }
+                                final message = messages[index];
+                                return _buildMessageBubble(message);
+                              },
+                            );
+                          },
+                        ),
+                ),
+                // --- تعديل (2): تصميم جديد لحقل الإدخال يدعم الأسطر المتعددة ---
+                Container(
+                  margin: const EdgeInsets.only(top: 8.0),
+                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).inputDecorationTheme.fillColor,
+                    borderRadius: BorderRadius.circular(30.0),
+                    border: Border.all(color: Theme.of(context).dividerColor)
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text('المساعد الذكي', style: Theme.of(context).textTheme.headlineSmall),
-                      if (hasProject)
-                        Text('مشروع: ${widget.projectContext!.name}',
-                            style: Theme.of(context).textTheme.bodySmall),
+                      Expanded(
+                        child: TextField(
+                          controller: _controller,
+                          enabled: !_isLoading && hasProject,
+                          decoration: InputDecoration(
+                            hintText: !hasProject ? 'اختر مشروعاً أولاً' : 'اسأل عن مشروعك...',
+                            border: InputBorder.none,
+                          ),
+                          keyboardType: TextInputType.multiline,
+                          minLines: 1,
+                          maxLines: 5,
+                          textInputAction: TextInputAction.newline,
+                          // تم حذف onSubmitted للسماح بإدخال سطر جديد
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.send),
+                        onPressed: (_isLoading || !hasProject) ? null : _sendMessage,
+                        color: Theme.of(context).primaryColor,
+                      ),
                     ],
                   ),
-                  const SizedBox(width: 48), // Placeholder for alignment
-                ],
-              ),
-              const Divider(height: 24),
-              if (_isAnalyzingCode)
-                const Padding(
-                    padding: EdgeInsets.only(bottom: 12.0),
-                    child: Column(
-                      children: [
-                        LinearProgressIndicator(),
-                        SizedBox(height: 4),
-                        Text('جاري قراءة الملفات...')
-                      ],
-                    )),
-              Expanded(
-                child: !hasProject
-                    ? const Center(
-                        child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
-                    : StreamBuilder<List<AiChatMessage>>(
-                        stream: _chatStream,
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                                  ConnectionState.waiting &&
-                              !snapshot.hasData) {
-                            return const Center(
-                                child: CircularProgressIndicator());
-                          }
-                          if (snapshot.hasError) {
-                            return Center(
-                                child: Text(
-                                    'خطأ في تحميل المحادثة: ${snapshot.error}'));
-                          }
-
-                          final messages = snapshot.data ?? [];
-
-                          if (messages.isEmpty && !_isLoading) {
-                            return const Center(
-                                child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
-                          }
-
-                          WidgetsBinding.instance
-                              .addPostFrameCallback((_) => _scrollToBottom());
-
-                          final itemCount =
-                              messages.length + (_isLoading ? 1 : 0);
-
-                          return ListView.builder(
-                            controller: _scrollController,
-                            itemCount: itemCount,
-                            itemBuilder: (context, index) {
-                              if (index == messages.length && _isLoading) {
-                                return _buildTypingIndicator();
-                              }
-                              final message = messages[index];
-                              return _buildMessageBubble(message);
-                            },
-                          );
-                        },
-                      ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: TextField(
-                  controller: _controller,
-                  enabled: !_isLoading && hasProject && canChat,
-                  decoration: InputDecoration(
-                    hintText: !hasProject
-                        ? 'اختر مشروعاً أولاً'
-                        : (canChat
-                            ? 'اسأل عن مشروعك...'
-                            : 'ليس لديك صلاحية للمحادثة'),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.send),
-                      onPressed: (_isLoading || !hasProject || !canChat)
-                          ? null
-                          : _sendMessage,
-                    ),
-                  ),
-                  onSubmitted: (_isLoading || !hasProject || !canChat)
-                      ? null
-                      : (_) => _sendMessage(),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

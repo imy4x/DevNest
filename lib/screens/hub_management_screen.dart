@@ -90,12 +90,12 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       context: context, 
       builder: (context) => AlertDialog(
         title: const Text('تأكيد الطرد'),
-        content: Text('هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟'),
+        content: Text('هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('طرد', style: TextStyle(color: Colors.red)),
+            child: const Text('طرد وتغيير الرمز', style: TextStyle(color: Colors.red)),
           ),
         ],
       )
@@ -105,7 +105,8 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       try {
         await _supabaseService.removeMember(member.id);
         if (mounted) {
-           showSuccessDialog(context, 'تم طرد العضو بنجاح.');
+           // ✨ --- تعديل: تم تحديث رسالة النجاح لتعكس تغيير الرمز --- ✨
+           showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
         }
         _refreshMembers();
       } catch (e) {
@@ -117,7 +118,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   }
 
   Future<void> _deleteHub() async {
-    // ✨ --- Check for members before allowing deletion --- ✨
     final members = await _supabaseService.getHubMembers(widget.hub.id);
     if (members.length > 1) {
       showErrorDialog(context, 'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
@@ -241,7 +241,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                                         children: [
                                           Expanded(
                                             child: Text(
-                                              // ✨ --- Display name is now mandatory from the start --- ✨
                                               member.displayName ?? 'عضو غير مسمى',
                                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                                               overflow: TextOverflow.ellipsis,
@@ -272,7 +271,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                                ],
                              ),
                             const Divider(),
-                            // ✨ --- Changed label to "Manage Projects" --- ✨
                              SwitchListTile(
                               title: const Text('إدارة المشاريع (إضافة/تعديل)'),
                               value: member.canManageProjects,

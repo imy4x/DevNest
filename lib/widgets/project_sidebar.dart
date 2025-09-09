@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
-import '../models/hub_member.dart'; // ✨ --- استيراد موديل العضو --- ✨
+import '../models/hub_member.dart'; 
 import '../models/project.dart';
 import '../services/supabase_service.dart';
 import 'add_edit_project_dialog.dart';
-import 'app_dialogs.dart'; // ✨ --- استيراد ملف نوافذ الحوار --- ✨
+import 'app_dialogs.dart';
 
 class ProjectSidebar extends StatefulWidget {
   final Function(Project?) onProjectSelected;
   final Project? selectedProject;
-  final HubMember? myMembership; // ✨ --- استقبال صلاحيات المستخدم --- ✨
+  final HubMember? myMembership;
 
   const ProjectSidebar({
     super.key,
     required this.onProjectSelected,
     required this.selectedProject,
-    required this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
+    required this.myMembership,
   });
 
   @override
@@ -42,7 +42,6 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
   }
 
   void _showAddProjectDialog() {
-    // ✨ --- التحقق من صلاحية إضافة المشاريع --- ✨
     final canAdd = widget.myMembership?.canManageProjects ?? false;
     if (_isLeader || canAdd) {
       showDialog(
@@ -59,6 +58,13 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
   }
 
   void _deleteProject(Project project) async {
+    // --- تعديل (3): إضافة التحقق من الصلاحية قبل الحذف ---
+    final canManage = widget.myMembership?.canManageProjects ?? false;
+    if (!_isLeader && !canManage) {
+      showPermissionDeniedDialog(context);
+      return;
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -97,9 +103,6 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
 
   @override
   Widget build(BuildContext context) {
-    // ✨ --- التحقق من صلاحية إضافة المشاريع للعرض والقيادة --- ✨
-    final bool canAddProjects = (widget.myMembership?.canManageProjects ?? false) || _isLeader;
-
     return Drawer(
       child: SafeArea(
         child: Column(
@@ -115,14 +118,13 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
                 ),
               ],
             ),
-            // ✨ --- إظهار زر الإضافة فقط لمن لديه الصلاحية --- ✨
-            if (canAddProjects)
-              ListTile(
-                leading: const Icon(Icons.add_circle_outline),
-                title: const Text('إضافة مشروع جديد'),
-                tileColor: Theme.of(context).primaryColor.withAlpha(50),
-                onTap: _showAddProjectDialog,
-              ),
+            // --- تعديل (3): إظهار زر الإضافة دائماً والتحقق من الصلاحية عند الضغط ---
+            ListTile(
+              leading: const Icon(Icons.add_circle_outline),
+              title: const Text('إضافة مشروع جديد'),
+              tileColor: Theme.of(context).primaryColor.withAlpha(50),
+              onTap: _showAddProjectDialog,
+            ),
             const Divider(height: 1),
             Expanded(
               child: FutureBuilder<List<Project>>(
@@ -177,4 +179,3 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
     );
   }
 }
-

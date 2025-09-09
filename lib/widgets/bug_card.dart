@@ -1,27 +1,32 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
 import '../models/bug.dart';
-import '../models/hub_member.dart'; // ✨ --- استيراد موديل العضو --- ✨
+import '../models/hub_member.dart';
+import '../models/project.dart';
 import '../services/gemini_service.dart';
+import '../services/github_service.dart';
 import '../services/supabase_service.dart';
-import './app_dialogs.dart'; // ✨ --- استيراد ملف نوافذ الحوار --- ✨
+import './app_dialogs.dart';
 
 class BugCard extends StatelessWidget {
   final Bug bug;
+  final Project project;
   final VoidCallback onStatusChanged;
   final VoidCallback onDeleted;
-  final HubMember? myMembership; // ✨ --- استقبال صلاحيات المستخدم --- ✨
+  final HubMember? myMembership;
   
   const BugCard({
     super.key, 
     required this.bug,
+    required this.project,
     required this.onStatusChanged,
     required this.onDeleted,
-    required this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
+    required this.myMembership,
   });
 
-  // --- تعديل: استخدام الحالات المترجمة لتحديد اللون ---
   Color _getStatusColor(String status) {
     switch (status) {
       case 'مفتوح': return Colors.orange.shade400;
@@ -31,7 +36,6 @@ class BugCard extends StatelessWidget {
     }
   }
 
-  // --- تعديل: استخدام الأنواع المترجمة لتحديد الأيقونة ---
   IconData _getTypeIcon(String type) {
     switch (type) {
       case 'حرج': return Icons.error;
@@ -41,51 +45,132 @@ class BugCard extends StatelessWidget {
     }
   }
   
-  void _showAiSuggestion(BuildContext context) {
+  // --- ✨ تعديل (1): إعادة كتابة منطق الذكاء الاصطناعي بالكامل ليدعم الرد التفاعلي --- ✨
+  void _showAiSuggestion(BuildContext context) async {
+    if (project.githubUrl == null || project.githubUrl!.isEmpty) {
+      showInfoDialog(
+        context,
+        'تحليل الكود غير متاح',
+        'لتحليل هذا الخطأ مع الكود، يجب إضافة رابط مستودع GitHub للمشروع.',
+      );
+      return;
+    }
+
     showDialog(
       context: context,
-      builder: (context) {
-        return FutureBuilder<String>(
-          future: GeminiService().getBugSolution(bug.title, bug.description),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const AlertDialog(
-                title: Text('تحليل الخطأ...'),
-                content: Center(child: CircularProgressIndicator()),
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        title: Text('تحليل الخطأ مع الكود...'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('يتم قراءة ملفات المشروع وتحليلها، قد تستغرق هذه العملية بعض الوقت...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final githubService = GitHubService();
+      final geminiService = GeminiService();
+
+      final codeContext = await githubService.fetchRepositoryCodeAsString(project.githubUrl!);
+      
+      // الدالة الآن تعيد نص بصيغة JSON
+      final rawJsonResult = await geminiService.analyzeBugWithCodeContext(
+        bugTitle: bug.title,
+        bugDescription: bug.description,
+        codeContext: codeContext,
+      );
+
+      if (context.mounted) Navigator.pop(context); // إغلاق نافذة التحميل
+
+      // تحليل الـ JSON
+      final analysisData = jsonDecode(rawJsonResult) as Map<String, dynamic>;
+      final verbalAnalysis = analysisData['verbalAnalysis'] as String? ?? 'لم يتم توفير تحليل.';
+      final codeSuggestions = analysisData['codeSuggestions'] as String? ?? 'لم يتم توفير اقتراحات للكود.';
+      final professionalPrompt = analysisData['professionalPrompt'] as String? ?? 'لم يتم إنشاء برومبت.';
+      
+      // عرض النافذة التفاعلية الجديدة
+      _showInteractiveAnalysisDialog(context, verbalAnalysis, codeSuggestions, professionalPrompt);
+
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context);
+        showErrorDialog(context, 'فشل تحليل الخطأ: $e');
+      }
+    }
+  }
+
+  // --- ✨ تعديل (2): نافذة العرض التفاعلية الجديدة --- ✨
+  void _showInteractiveAnalysisDialog(BuildContext context, String verbalAnalysis, String codeSuggestions, String professionalPrompt) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تحليل المساعد الذكي'),
+        content: SingleChildScrollView(
+          child: MarkdownBody(data: verbalAnalysis), // عرض التحليل الشفهي فقط
+        ),
+        actionsAlignment: MainAxisAlignment.spaceBetween,
+        actions: <Widget>[
+          TextButton.icon(
+            icon: const Icon(Icons.code, size: 18),
+            label: const Text('عرض تعديلات الكود'),
+            onPressed: () {
+              _showCodeSuggestionsDialog(context, codeSuggestions);
+            },
+          ),
+          TextButton.icon(
+            icon: const Icon(Icons.copy_all_outlined, size: 18),
+            label: const Text('نسخ البرومبت'),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: professionalPrompt));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('تم نسخ البرومبت الاحترافي إلى الحافظة')),
               );
-            }
-            if (snapshot.hasError) {
-              return AlertDialog(
-                title: const Text('خطأ'),
-                content: Text('فشل الحصول على اقتراح: ${snapshot.error}'),
-                actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))],
-              );
-            }
-            return AlertDialog(
-              title: const Text('اقتراح من المساعد الذكي'),
-              content: SingleChildScrollView(
-                child: MarkdownBody(data: snapshot.data ?? 'لا يوجد اقتراح متاح.'),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق')),
-              ],
-            );
-          },
-        );
-      },
+            },
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
     );
   }
 
-  // --- تعديل: إضافة دالة تغيير الحالة ---
+  // --- ✨ تعديل (3): نافذة منفصلة لعرض تعديلات الكود --- ✨
+  void _showCodeSuggestionsDialog(BuildContext context, String codeSuggestions) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('التعديلات المقترحة على الكود'),
+        content: SizedBox(
+          width: MediaQuery.of(context).size.width * 0.8, // عرض أكبر للنافذة
+          child: SingleChildScrollView(
+            child: MarkdownBody(data: codeSuggestions, selectable: true),
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
+
   void _changeStatus(BuildContext context) async {
-    // ✨ --- التحقق من صلاحية تعديل الأخطاء --- ✨
     if (!(myMembership?.canEditBugs ?? false)) {
       showPermissionDeniedDialog(context);
       return;
     }
 
     final List<String> statuses = ['مفتوح', 'قيد التنفيذ', 'تم الحل'];
-    // إزالة الحالة الحالية من الخيارات
     statuses.remove(bug.status);
 
     final newStatus = await showDialog<String>(
@@ -115,9 +200,7 @@ class BugCard extends StatelessWidget {
     }
   }
 
-  // --- تعديل: إضافة دالة حذف الخطأ ---
   void _deleteBug(BuildContext context) async {
-    // ✨ --- التحقق من صلاحية تعديل الأخطاء --- ✨
     if (!(myMembership?.canEditBugs ?? false)) {
       showPermissionDeniedDialog(context);
       return;
@@ -198,7 +281,6 @@ class BugCard extends StatelessWidget {
               children: [
                 Icon(_getTypeIcon(bug.type), size: 16, color: Colors.grey[400]),
                 const SizedBox(width: 4),
-                // عرض النوع والحالة باللغة العربية
                 Text(bug.type, style: TextStyle(color: Colors.grey[400])),
                 const SizedBox(width: 8),
                 Container(

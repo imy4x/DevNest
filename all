@@ -32,13 +32,9 @@ class DevNestApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ✨ --- THEME & RTL ENFORCEMENT --- ✨
     return Directionality(
       textDirection: TextDirection.rtl,
       child: MaterialApp(
-        // ✨ --- RESPONSIVE SETUP --- ✨
-        // The builder from ResponsiveBreakpoints makes the app's layout
-        // adapt to different screen sizes automatically.
         builder: (context, child) => ResponsiveBreakpoints.builder(
           child: child!,
           breakpoints: [
@@ -48,9 +44,8 @@ class DevNestApp extends StatelessWidget {
             const Breakpoint(start: 1921, end: double.infinity, name: '4K'),
           ],
         ),
-        title: 'DevNest',
+        title: 'Dev Nest',
         debugShowCheckedModeBanner: false,
-        
         locale: const Locale('ar'),
         supportedLocales: const [
           Locale('ar'),
@@ -61,18 +56,74 @@ class DevNestApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
 
-        theme: ThemeData.dark().copyWith(
-          primaryColor: const Color(0xFF8A2BE2), 
-          scaffoldBackgroundColor: const Color(0xFF121212),
-          cardColor: const Color(0xFF1E1E1E),
+        // ✨ --- NEW "NEON INDIGO" THEME --- ✨
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          primaryColor: const Color(0xFF9F70FD), // Vibrant Purple
+          scaffoldBackgroundColor: const Color(0xFF1A1B26), // Deep Indigo
+          cardColor: const Color(0xFF2A2D3E), // Lighter Indigo/Purple
           textTheme: GoogleFonts.cairoTextTheme(ThemeData.dark().textTheme),
           appBarTheme: const AppBarTheme(
-            backgroundColor: Color(0xFF1E1E1E),
+            backgroundColor: Color(0xFF2A2D3E), // Match card color
             elevation: 0,
           ),
           floatingActionButtonTheme: const FloatingActionButtonThemeData(
-            backgroundColor: Color(0xFF8A2BE2),
+            backgroundColor: Color(0xFF9F70FD), // Vibrant Purple
+            foregroundColor: Colors.white, // White icon on button
           ),
+          inputDecorationTheme: InputDecorationTheme(
+            filled: true,
+            fillColor: const Color(0xFF1A1B26),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.grey.shade800),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF9F70FD)),
+            ),
+          ),
+          elevatedButtonTheme: ElevatedButtonThemeData(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF9F70FD),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+            ),
+          ),
+          outlinedButtonTheme: OutlinedButtonThemeData(
+              style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: Color(0xFF9F70FD)),
+            foregroundColor: const Color(0xFF9F70FD),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+          )),
+          dialogTheme: DialogThemeData(
+            backgroundColor: const Color(0xFF2A2D3E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          chipTheme: ChipThemeData(
+            backgroundColor: const Color(0xFF9F70FD).withOpacity(0.2),
+            labelStyle: const TextStyle(color: Color(0xFF9F70FD), fontWeight: FontWeight.bold),
+            side: BorderSide.none,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          tabBarTheme: TabBarThemeData(
+            indicator: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: const Color(0xFF9F70FD),
+                  width: 2.5,
+                ),
+              ),
+            ),
+            labelColor: const Color(0xFF9F70FD),
+            unselectedLabelColor: Colors.grey.shade400,
+          )
         ),
         home: isHubSetupComplete ? const HomeScreen() : const InitialHubScreen(),
       ),
@@ -202,450 +253,185 @@ class _AddBugDialogState extends State<AddBugDialog> {
   }
 }
 import 'package:flutter/material.dart';
-import '../models/project.dart';
-import '../services/github_service.dart';
-import '../services/supabase_service.dart';
-
-class AddEditProjectDialog extends StatefulWidget {
-  final Project? project;
-  final Function(bool isNew) onProjectSaved;
-
-  const AddEditProjectDialog({
-    super.key,
-    this.project,
-    required this.onProjectSaved,
-  });
-
-  @override
-  State<AddEditProjectDialog> createState() => _AddEditProjectDialogState();
-}
-
-class _AddEditProjectDialogState extends State<AddEditProjectDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _githubUrlController = TextEditingController();
-
-  final SupabaseService _supabaseService = SupabaseService();
-  final GitHubService _githubService = GitHubService();
-  bool _isLoading = false;
-
-  bool get _isEditing => widget.project != null;
-
-  @override
-  void initState() {
-    super.initState();
-    if (_isEditing) {
-      _nameController.text = widget.project!.name;
-      _descriptionController.text = widget.project!.description ?? '';
-      _githubUrlController.text = widget.project!.githubUrl ?? '';
-    }
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _descriptionController.dispose();
-    _githubUrlController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveProject() async {
-    if (_formKey.currentState?.validate() ?? false) {
-      setState(() => _isLoading = true);
-
-      final githubUrl = _githubUrlController.text.trim();
-      String? apkUrl;
-
-      try {
-        if (githubUrl.isNotEmpty) {
-          try {
-            apkUrl = await _githubService.fetchLatestApkUrl(githubUrl);
-             if (mounted && apkUrl != null) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('تم العثور على ملف APK في آخر إصدار!'), backgroundColor: Colors.green),
-              );
-            }
-          } catch (e) {
-             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('لم يتم العثور على إصدار APK: $e'), backgroundColor: Colors.orange),
-              );
-            }
-          }
-        }
-        
-        // --- تعديل: تم حذف الحقول الإضافية ---
-        final projectData = {
-          'name': _nameController.text.trim(),
-          'description': _descriptionController.text.trim(),
-          'github_url': githubUrl.isEmpty ? null : githubUrl,
-          'apk_download_url': apkUrl,
-        };
-
-        if (_isEditing) {
-          projectData['id'] = widget.project!.id;
-          await _supabaseService.updateProject(projectData);
-        } else {
-          await _supabaseService.addProject(projectData);
-        }
-
-        widget.onProjectSaved(!_isEditing);
-
-        if (mounted) Navigator.of(context).pop();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('فشل حفظ المشروع: $e'), backgroundColor: Colors.red),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(_isEditing ? 'تعديل المشروع' : 'إضافة مشروع جديد'),
-      content: SingleChildScrollView(
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: _nameController,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: 'اسم المشروع'),
-                validator: (v) => (v?.trim().isEmpty ?? true) ? 'الرجاء إدخال اسم للمشروع' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _descriptionController,
-                decoration: const InputDecoration(labelText: 'وصف المشروع'),
-                maxLines: 3,
-              ),
-              const SizedBox(height: 24),
-              TextFormField(
-                controller: _githubUrlController,
-                decoration: const InputDecoration(
-                  labelText: 'رابط مستودع GitHub (اختياري)',
-                  hintText: 'https://github.com/user/repo',
-                  prefixIcon: Icon(Icons.link),
-                ),
-                keyboardType: TextInputType.url,
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) return null;
-                  if (!value.startsWith('https://github.com/')) {
-                    return 'الرجاء إدخال رابط GitHub صالح';
-                  }
-                  return null;
-                },
-              ),
-              // --- تعديل: تم حذف الحقول الإضافية من هنا ---
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('إلغاء')),
-        FilledButton(
-          onPressed: _isLoading ? null : _saveProject,
-          child: _isLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('حفظ'),
-        ),
-      ],
-    );
-  }
-}
-import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
-import 'dart:async';
-import '../models/project.dart';
-import '../models/ai_chat_message.dart';
 import '../models/hub_member.dart'; // ✨ --- استيراد موديل العضو --- ✨
-import '../services/gemini_service.dart';
-import '../services/github_service.dart';
+import '../models/project.dart';
 import '../services/supabase_service.dart';
+import 'add_edit_project_dialog.dart';
 import 'app_dialogs.dart'; // ✨ --- استيراد ملف نوافذ الحوار --- ✨
-import 'package:url_launcher/url_launcher.dart';
 
-class AiAssistantPanel extends StatefulWidget {
-  final Project? projectContext;
+class ProjectSidebar extends StatefulWidget {
+  final Function(Project?) onProjectSelected;
+  final Project? selectedProject;
   final HubMember? myMembership; // ✨ --- استقبال صلاحيات المستخدم --- ✨
 
-  const AiAssistantPanel({
-    super.key, 
-    this.projectContext,
-    this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
+  const ProjectSidebar({
+    super.key,
+    required this.onProjectSelected,
+    required this.selectedProject,
+    required this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
   });
 
   @override
-  State<AiAssistantPanel> createState() => _AiAssistantPanelState();
+  State<ProjectSidebar> createState() => _ProjectSidebarState();
 }
 
-class _AiAssistantPanelState extends State<AiAssistantPanel> {
-  final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  final GeminiService _geminiService = GeminiService();
+class _ProjectSidebarState extends State<ProjectSidebar> {
   final SupabaseService _supabaseService = SupabaseService();
-  final GitHubService _githubService = GitHubService();
-  
-  bool _isLoading = false;
-  bool _isAnalyzingCode = false;
-  String? _codeContext;
+  late Future<List<Project>> _projectsFuture;
 
-  Stream<List<AiChatMessage>>? _chatStream;
+  bool get _isLeader => widget.myMembership?.role == 'leader';
 
   @override
   void initState() {
     super.initState();
-    _setupChatStream();
-    if (widget.projectContext?.githubUrl?.isNotEmpty ?? false) {
-      _analyzeCodebase();
-    }
-  }
-  
-  @override
-  void didUpdateWidget(covariant AiAssistantPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.projectContext?.id != oldWidget.projectContext?.id) {
-      _setupChatStream();
-      _codeContext = null; 
-      if (widget.projectContext?.githubUrl?.isNotEmpty ?? false) {
-        _analyzeCodebase();
-      }
-    }
+    _refreshProjects();
   }
 
-  void _setupChatStream() {
-     setState(() {
-        if (widget.projectContext != null) {
-          _chatStream = _supabaseService.getChatHistoryStream(widget.projectContext!.id);
-        } else {
-          _chatStream = null;
-        }
-      });
-  }
-
-  @override
-  void dispose(){
-    _scrollController.dispose();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _scrollToBottom() {
-     Timer(const Duration(milliseconds: 100), () {
-       if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  Future<void> _analyzeCodebase() async {
-    if (widget.projectContext?.githubUrl == null || widget.projectContext!.githubUrl!.isEmpty) return;
-    
-    setState(() => _isAnalyzingCode = true);
-    
-    try {
-      final code = await _githubService.fetchRepositoryCodeAsString(widget.projectContext!.githubUrl!);
+  Future<void> _refreshProjects() async {
+    if (mounted) {
       setState(() {
-        _codeContext = code;
+        _projectsFuture = _supabaseService.getProjects();
       });
-    } catch(e) {
-       showErrorDialog(context, 'فشل تحليل الكود: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isAnalyzingCode = false);
-      }
     }
   }
 
-  Future<void> _sendMessage() async {
-    // ✨ --- التحقق من صلاحية استخدام المحادثة --- ✨
-    final canChat = widget.myMembership?.canUseChat ?? false;
-    if (!canChat) {
+  void _showAddProjectDialog() {
+    // ✨ --- التحقق من صلاحية إضافة المشاريع --- ✨
+    final canAdd = widget.myMembership?.canManageProjects ?? false;
+    if (_isLeader || canAdd) {
+      showDialog(
+        context: context,
+        builder: (context) => AddEditProjectDialog(
+          onProjectSaved: (isNew) {
+            _refreshProjects();
+          },
+        ),
+      );
+    } else {
       showPermissionDeniedDialog(context);
-      return;
     }
+  }
 
-    if (_controller.text.trim().isEmpty || widget.projectContext == null) return;
-    
-    final userMessage = _controller.text.trim();
-    final projectId = widget.projectContext!.id;
-    _controller.clear();
-
-    await _supabaseService.addChatMessage(projectId: projectId, role: 'user', content: userMessage);
-    
-    setState(() => _isLoading = true);
-    _scrollToBottom();
-
-    final bugs = await _supabaseService.getBugsForProject(projectId);
-    final history = await _supabaseService.getRecentChatHistory(projectId);
-
-    final response = await _geminiService.generalChat(
-      userMessage: userMessage,
-      project: widget.projectContext,
-      bugs: bugs,
-      history: history,
-      codeContext: _codeContext,
+  void _deleteProject(Project project) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حذف المشروع'),
+        content: Text(
+            'هل أنت متأكد من رغبتك في حذف مشروع "${project.name}"؟ لا يمكن التراجع عن هذا الإجراء.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('حذف', style: TextStyle(color: Colors.red.shade400)),
+          ),
+        ],
+      ),
     );
 
-    await _supabaseService.addChatMessage(projectId: projectId, role: 'model', content: response);
-
-    if(mounted) {
-      setState(() => _isLoading = false);
+    if (confirm == true) {
+      try {
+        await _supabaseService.deleteProject(project.id);
+        
+        if (widget.selectedProject?.id == project.id) {
+          widget.onProjectSelected(null);
+        }
+        
+        _refreshProjects();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('فشل حذف المشروع: $e')));
+        }
+      }
     }
-    _scrollToBottom();
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool hasProject = widget.projectContext != null;
-    // ✨ --- تحديد ما إذا كان بإمكان المستخدم استخدام المحادثة --- ✨
-    final bool canChat = widget.myMembership?.canUseChat ?? false;
+    // ✨ --- التحقق من صلاحية إضافة المشاريع للعرض والقيادة --- ✨
+    final bool canAddProjects = (widget.myMembership?.canManageProjects ?? false) || _isLeader;
 
     return Drawer(
       child: SafeArea(
-        child: Scaffold(
-          resizeToAvoidBottomInset: true, 
-          body: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Text('المساعد الذكي', style: Theme.of(context).textTheme.headlineSmall),
-                if (hasProject) Text('مشروع: ${widget.projectContext!.name}', style: Theme.of(context).textTheme.bodySmall),
-                const Divider(height: 24),
-                
-                if (_isAnalyzingCode)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 12.0),
-                    child: Column(children: [LinearProgressIndicator(), SizedBox(height: 4), Text('جاري قراءة الملفات...')],)
-                  ),
-
-                Expanded(
-                  child: !hasProject
-                      ? const Center(child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
-                      : StreamBuilder<List<AiChatMessage>>(
-                          stream: _chatStream,
-                          builder: (context, snapshot) {
-                            if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-                              return const Center(child: CircularProgressIndicator());
-                            }
-                            if (snapshot.hasError) {
-                              return Center(child: Text('خطأ في تحميل المحادثة: ${snapshot.error}'));
-                            }
-                            
-                            final messages = snapshot.data ?? [];
-
-                            if (messages.isEmpty && !_isLoading) {
-                               return const Center(child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
-                            }
-
-                            WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-                            
-                            final itemCount = messages.length + (_isLoading ? 1 : 0);
-
-                            return ListView.builder(
-                              controller: _scrollController,
-                              itemCount: itemCount,
-                              itemBuilder: (context, index) {
-                                if (index == messages.length && _isLoading) {
-                                  return _buildTypingIndicator();
-                                }
-                                final message = messages[index];
-                                return _buildMessageBubble(message);
-                              },
-                            );
-                          },
-                        ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 8.0),
-                  child: TextField(
-                    controller: _controller,
-                    // ✨ --- تعطيل الحقل في حال عدم وجود صلاحية --- ✨
-                    enabled: !_isLoading && hasProject && canChat,
-                    decoration: InputDecoration(
-                      hintText: !hasProject 
-                        ? 'اختر مشروعاً أولاً' 
-                        : (canChat ? 'اسأل عن مشروعك...' : 'ليس لديك صلاحية للمحادثة'),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.send),
-                        // ✨ --- تعطيل الزر في حال عدم وجود صلاحية --- ✨
-                        onPressed: (_isLoading || !hasProject || !canChat) ? null : _sendMessage,
-                      ),
-                    ),
-                    onSubmitted: (_isLoading || !hasProject || !canChat) ? null : (_) => _sendMessage(),
-                  ),
+        child: Column(
+          children: [
+            AppBar(
+              title: const Text('المشاريع'),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _refreshProjects,
+                  tooltip: 'تحديث القائمة',
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTypingIndicator() {
-    return Align(
-      alignment: AlignmentDirectional.centerStart,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey.shade400),
+            // ✨ --- إظهار زر الإضافة فقط لمن لديه الصلاحية --- ✨
+            if (canAddProjects)
+              ListTile(
+                leading: const Icon(Icons.add_circle_outline),
+                title: const Text('إضافة مشروع جديد'),
+                tileColor: Theme.of(context).primaryColor.withAlpha(50),
+                onTap: _showAddProjectDialog,
+              ),
+            const Divider(height: 1),
+            Expanded(
+              child: FutureBuilder<List<Project>>(
+                future: _projectsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Center(child: Text('خطأ: ${snapshot.error}'));
+                  }
+                  if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                    return const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(16.0),
+                        child: Text(
+                          'لا توجد مشاريع بعد. ابدأ بإضافة مشروع جديد!',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+                  }
+                  final projects = snapshot.data!;
+                  return ListView.builder(
+                    padding: EdgeInsets.zero,
+                    itemCount: projects.length,
+                    itemBuilder: (context, index) {
+                      final project = projects[index];
+                      return ListTile(
+                        title: Text(project.name),
+                        selected: widget.selectedProject?.id == project.id,
+                        selectedTileColor:
+                            Theme.of(context).primaryColor.withOpacity(0.3),
+                        onTap: () {
+                          widget.onProjectSelected(project);
+                          Navigator.of(context).pop();
+                        },
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 20),
+                          onPressed: () => _deleteProject(project),
+                          tooltip: 'حذف المشروع',
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
-            const SizedBox(width: 10),
-            const Text("...يكتب"),
           ],
         ),
       ),
     );
   }
-
-  Widget _buildMessageBubble(AiChatMessage message) {
-      final isUser = message.role == 'user';
-      return Align(
-        alignment: isUser ? AlignmentDirectional.centerEnd : AlignmentDirectional.centerStart,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-          decoration: BoxDecoration(
-            color: isUser ? Theme.of(context).primaryColor : Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: MarkdownBody(
-            data: message.content,
-            selectable: true,
-            onTapLink: (text, href, title) async {
-              if (href != null) {
-                final uri = Uri.parse(href);
-                if (await canLaunchUrl(uri)) {
-                  await launchUrl(uri);
-                }
-              }
-            },
-          ),
-        ),
-      );
-    }
 }
+
 import 'package:flutter/material.dart';
 
 // ملف جديد لمركزة جميع نوافذ الحوار وتوحيد تصميمها
@@ -667,25 +453,6 @@ void showInfoDialog(BuildContext context, String title, String content) {
   );
 }
 
-/// يعرض نافذة حوار خاصة بالنجاح
-void showSuccessDialog(BuildContext context, String content) {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('نجاح'),
-      content: Text(content),
-      icon: Icon(Icons.check_circle_outline, color: Colors.green.shade400, size: 32),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('موافق'),
-        ),
-      ],
-    ),
-  );
-}
-
-
 /// يعرض نافذة حوار خاصة بالأخطاء
 void showErrorDialog(BuildContext context, String content) {
   showDialog(
@@ -693,29 +460,11 @@ void showErrorDialog(BuildContext context, String content) {
     builder: (context) => AlertDialog(
       title: const Text('حدث خطأ'),
       content: Text(content),
-      icon: Icon(Icons.error_outline, color: Colors.red.shade400, size: 32),
+      icon: Icon(Icons.error_outline, color: Colors.red.shade400),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('إغلاق'),
-        ),
-      ],
-    ),
-  );
-}
-
-/// يعرض نافذة حوار لرفض الصلاحية
-void showPermissionDeniedDialog(BuildContext context) {
-   showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('وصول مرفوض'),
-      content: const Text('ليس لديك الصلاحية الكافية للقيام بهذا الإجراء. الرجاء التواصل مع قائد الـ Hub.'),
-      icon: Icon(Icons.gpp_bad_outlined, color: Colors.orange.shade400, size: 32),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('فهمت'),
         ),
       ],
     ),
@@ -978,6 +727,25 @@ void showInfoDialog(BuildContext context, String title, String content) {
   );
 }
 
+/// يعرض نافذة حوار خاصة بالنجاح
+void showSuccessDialog(BuildContext context, String content) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('نجاح'),
+      content: Text(content),
+      icon: Icon(Icons.check_circle_outline, color: Colors.green.shade400, size: 32),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('موافق'),
+        ),
+      ],
+    ),
+  );
+}
+
+
 /// يعرض نافذة حوار خاصة بالأخطاء
 void showErrorDialog(BuildContext context, String content) {
   showDialog(
@@ -985,7 +753,7 @@ void showErrorDialog(BuildContext context, String content) {
     builder: (context) => AlertDialog(
       title: const Text('حدث خطأ'),
       content: Text(content),
-      icon: Icon(Icons.error_outline, color: Colors.red.shade400),
+      icon: Icon(Icons.error_outline, color: Colors.red.shade400, size: 32),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -995,80 +763,192 @@ void showErrorDialog(BuildContext context, String content) {
     ),
   );
 }
+
+/// يعرض نافذة حوار لرفض الصلاحية
+void showPermissionDeniedDialog(BuildContext context) {
+   showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('وصول مرفوض'),
+      content: const Text('ليس لديك الصلاحية الكافية للقيام بهذا الإجراء. الرجاء التواصل مع قائد الـ Hub.'),
+      icon: Icon(Icons.gpp_bad_outlined, color: Colors.orange.shade400, size: 32),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('فهمت'),
+        ),
+      ],
+    ),
+  );
+}
 import 'package:flutter/material.dart';
-import '../models/hub_member.dart'; // ✨ --- استيراد موديل العضو --- ✨
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'dart:async';
 import '../models/project.dart';
+import '../models/ai_chat_message.dart';
+import '../models/hub_member.dart';
+import '../services/gemini_service.dart';
+import '../services/github_service.dart';
 import '../services/supabase_service.dart';
-import 'add_edit_project_dialog.dart';
-import 'app_dialogs.dart'; // ✨ --- استيراد ملف نوافذ الحوار --- ✨
+import 'app_dialogs.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-class ProjectSidebar extends StatefulWidget {
-  final Function(Project?) onProjectSelected;
-  final Project? selectedProject;
-  final HubMember? myMembership; // ✨ --- استقبال صلاحيات المستخدم --- ✨
+class AiAssistantPanel extends StatefulWidget {
+  final Project? projectContext;
+  final HubMember? myMembership;
 
-  const ProjectSidebar({
+  const AiAssistantPanel({
     super.key,
-    required this.onProjectSelected,
-    required this.selectedProject,
-    required this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
+    this.projectContext,
+    this.myMembership,
   });
 
   @override
-  State<ProjectSidebar> createState() => _ProjectSidebarState();
+  State<AiAssistantPanel> createState() => _AiAssistantPanelState();
 }
 
-class _ProjectSidebarState extends State<ProjectSidebar> {
+class _AiAssistantPanelState extends State<AiAssistantPanel> {
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final GeminiService _geminiService = GeminiService();
   final SupabaseService _supabaseService = SupabaseService();
-  late Future<List<Project>> _projectsFuture;
+  final GitHubService _githubService = GitHubService();
 
-  bool get _isLeader => widget.myMembership?.role == 'leader';
+  bool _isLoading = false;
+  bool _isAnalyzingCode = false;
+  String? _codeContext;
+
+  Stream<List<AiChatMessage>>? _chatStream;
 
   @override
   void initState() {
     super.initState();
-    _refreshProjects();
+    _setupChatStream();
+    if (widget.projectContext?.githubUrl?.isNotEmpty ?? false) {
+      _analyzeCodebase();
+    }
   }
 
-  Future<void> _refreshProjects() async {
-    if (mounted) {
+  @override
+  void didUpdateWidget(covariant AiAssistantPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.projectContext?.id != oldWidget.projectContext?.id) {
+      _setupChatStream();
+      _codeContext = null;
+      if (widget.projectContext?.githubUrl?.isNotEmpty ?? false) {
+        _analyzeCodebase();
+      }
+    }
+  }
+
+  void _setupChatStream() {
+    setState(() {
+      if (widget.projectContext != null) {
+        _chatStream =
+            _supabaseService.getChatHistoryStream(widget.projectContext!.id);
+      } else {
+        _chatStream = null;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    Timer(const Duration(milliseconds: 100), () {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _analyzeCodebase() async {
+    if (widget.projectContext?.githubUrl == null ||
+        widget.projectContext!.githubUrl!.isEmpty) return;
+
+    setState(() => _isAnalyzingCode = true);
+
+    try {
+      final code = await _githubService
+          .fetchRepositoryCodeAsString(widget.projectContext!.githubUrl!);
       setState(() {
-        _projectsFuture = _supabaseService.getProjects();
+        _codeContext = code;
       });
+    } catch (e) {
+      showErrorDialog(context, 'فشل تحليل الكود: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isAnalyzingCode = false);
+      }
     }
   }
 
-  void _showAddProjectDialog() {
-    // ✨ --- التحقق من صلاحية إضافة المشاريع --- ✨
-    final canAdd = widget.myMembership?.canAddProjects ?? false;
-    if (_isLeader || canAdd) {
-      showDialog(
-        context: context,
-        builder: (context) => AddEditProjectDialog(
-          onProjectSaved: (isNew) {
-            _refreshProjects();
-          },
-        ),
-      );
-    } else {
+  Future<void> _sendMessage() async {
+    final canChat = widget.myMembership?.canUseChat ?? false;
+    if (!canChat) {
       showPermissionDeniedDialog(context);
+      return;
     }
+
+    if (_controller.text.trim().isEmpty || widget.projectContext == null)
+      return;
+
+    final userMessage = _controller.text.trim();
+    final projectId = widget.projectContext!.id;
+    _controller.clear();
+
+    await _supabaseService.addChatMessage(
+        projectId: projectId, role: 'user', content: userMessage);
+
+    setState(() => _isLoading = true);
+    _scrollToBottom();
+
+    final bugs = await _supabaseService.getBugsForProject(projectId);
+    final history = await _supabaseService.getRecentChatHistory(projectId);
+
+    final response = await _geminiService.generalChat(
+      userMessage: userMessage,
+      project: widget.projectContext,
+      bugs: bugs,
+      history: history,
+      codeContext: _codeContext,
+    );
+
+    await _supabaseService.addChatMessage(
+        projectId: projectId, role: 'model', content: response);
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+    _scrollToBottom();
   }
 
-  void _deleteProject(Project project) async {
+  // ✨ --- Function to clear chat history --- ✨
+  Future<void> _clearChatHistory() async {
+    if (widget.projectContext == null) return;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('حذف المشروع'),
-        content: Text(
-            'هل أنت متأكد من رغبتك في حذف مشروع "${project.name}"؟ لا يمكن التراجع عن هذا الإجراء.'),
+        title: const Text('مسح المحادثة'),
+        content: const Text('هل أنت متأكد من رغبتك في مسح جميع رسائل هذه المحادثة؟ لا يمكن التراجع عن هذا الإجراء.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: Text('حذف', style: TextStyle(color: Colors.red.shade400)),
+            child: const Text('مسح', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -1076,105 +956,357 @@ class _ProjectSidebarState extends State<ProjectSidebar> {
 
     if (confirm == true) {
       try {
-        await _supabaseService.deleteProject(project.id);
-        
-        if (widget.selectedProject?.id == project.id) {
-          widget.onProjectSelected(null);
+        await _supabaseService.clearChatHistory(widget.projectContext!.id);
+        if (mounted) {
+          showSuccessDialog(context, 'تم مسح المحادثة بنجاح.');
         }
-        
-        _refreshProjects();
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('فشل حذف المشروع: $e')));
+          showErrorDialog(context, 'فشل مسح المحادثة: $e');
         }
+      }
+    }
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    final bool hasProject = widget.projectContext != null;
+    final bool canChat = widget.myMembership?.canUseChat ?? false;
+    // ✨ --- Check if the user is the leader --- ✨
+    final bool isLeader = widget.myMembership?.role == 'leader';
+
+    return Drawer(
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // ✨ --- Clear chat button, only visible to the leader --- ✨
+                  if(isLeader && hasProject)
+                    IconButton(
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      onPressed: _clearChatHistory,
+                      tooltip: 'مسح سجل المحادثة',
+                    )
+                  else
+                    const SizedBox(width: 48), // Placeholder for alignment
+                  
+                  Column(
+                    children: [
+                      Text('المساعد الذكي', style: Theme.of(context).textTheme.headlineSmall),
+                      if (hasProject)
+                        Text('مشروع: ${widget.projectContext!.name}',
+                            style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                  const SizedBox(width: 48), // Placeholder for alignment
+                ],
+              ),
+              const Divider(height: 24),
+              if (_isAnalyzingCode)
+                const Padding(
+                    padding: EdgeInsets.only(bottom: 12.0),
+                    child: Column(
+                      children: [
+                        LinearProgressIndicator(),
+                        SizedBox(height: 4),
+                        Text('جاري قراءة الملفات...')
+                      ],
+                    )),
+              Expanded(
+                child: !hasProject
+                    ? const Center(
+                        child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
+                    : StreamBuilder<List<AiChatMessage>>(
+                        stream: _chatStream,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                                  ConnectionState.waiting &&
+                              !snapshot.hasData) {
+                            return const Center(
+                                child: CircularProgressIndicator());
+                          }
+                          if (snapshot.hasError) {
+                            return Center(
+                                child: Text(
+                                    'خطأ في تحميل المحادثة: ${snapshot.error}'));
+                          }
+
+                          final messages = snapshot.data ?? [];
+
+                          if (messages.isEmpty && !_isLoading) {
+                            return const Center(
+                                child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
+                          }
+
+                          WidgetsBinding.instance
+                              .addPostFrameCallback((_) => _scrollToBottom());
+
+                          final itemCount =
+                              messages.length + (_isLoading ? 1 : 0);
+
+                          return ListView.builder(
+                            controller: _scrollController,
+                            itemCount: itemCount,
+                            itemBuilder: (context, index) {
+                              if (index == messages.length && _isLoading) {
+                                return _buildTypingIndicator();
+                              }
+                              final message = messages[index];
+                              return _buildMessageBubble(message);
+                            },
+                          );
+                        },
+                      ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: TextField(
+                  controller: _controller,
+                  enabled: !_isLoading && hasProject && canChat,
+                  decoration: InputDecoration(
+                    hintText: !hasProject
+                        ? 'اختر مشروعاً أولاً'
+                        : (canChat
+                            ? 'اسأل عن مشروعك...'
+                            : 'ليس لديك صلاحية للمحادثة'),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: (_isLoading || !hasProject || !canChat)
+                          ? null
+                          : _sendMessage,
+                    ),
+                  ),
+                  onSubmitted: (_isLoading || !hasProject || !canChat)
+                      ? null
+                      : (_) => _sendMessage(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTypingIndicator() {
+    return Align(
+      alignment: AlignmentDirectional.centerStart,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.grey.shade400),
+            ),
+            const SizedBox(width: 10),
+            const Text("...يكتب"),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(AiChatMessage message) {
+    final isUser = message.role == 'user';
+    return Align(
+      alignment:
+          isUser ? AlignmentDirectional.centerEnd : AlignmentDirectional.centerStart,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        decoration: BoxDecoration(
+          color: isUser
+              ? Theme.of(context).primaryColor
+              : Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: MarkdownBody(
+          data: message.content,
+          selectable: true,
+          onTapLink: (text, href, title) async {
+            if (href != null) {
+              final uri = Uri.parse(href);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri);
+              }
+            }
+          },
+        ),
+      ),
+    );
+  }
+}
+import 'package:flutter/material.dart';
+import '../models/project.dart';
+import '../services/github_service.dart';
+import '../services/supabase_service.dart';
+
+class AddEditProjectDialog extends StatefulWidget {
+  final Project? project;
+  final Function(bool isNew) onProjectSaved;
+
+  const AddEditProjectDialog({
+    super.key,
+    this.project,
+    required this.onProjectSaved,
+  });
+
+  @override
+  State<AddEditProjectDialog> createState() => _AddEditProjectDialogState();
+}
+
+class _AddEditProjectDialogState extends State<AddEditProjectDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _githubUrlController = TextEditingController();
+
+  final SupabaseService _supabaseService = SupabaseService();
+  final GitHubService _githubService = GitHubService();
+  bool _isLoading = false;
+
+  bool get _isEditing => widget.project != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isEditing) {
+      _nameController.text = widget.project!.name;
+      _descriptionController.text = widget.project!.description ?? '';
+      _githubUrlController.text = widget.project!.githubUrl ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _githubUrlController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveProject() async {
+    if (_formKey.currentState?.validate() ?? false) {
+      setState(() => _isLoading = true);
+
+      final githubUrl = _githubUrlController.text.trim();
+      String? apkUrl;
+
+      try {
+        if (githubUrl.isNotEmpty) {
+          try {
+            apkUrl = await _githubService.fetchLatestApkUrl(githubUrl);
+             if (mounted && apkUrl != null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('تم العثور على ملف APK في آخر إصدار!'), backgroundColor: Colors.green),
+              );
+            }
+          } catch (e) {
+             if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('لم يتم العثور على إصدار APK: $e'), backgroundColor: Colors.orange),
+              );
+            }
+          }
+        }
+        
+        // --- تعديل: تم حذف الحقول الإضافية ---
+        final projectData = {
+          'name': _nameController.text.trim(),
+          'description': _descriptionController.text.trim(),
+          'github_url': githubUrl.isEmpty ? null : githubUrl,
+          'apk_download_url': apkUrl,
+        };
+
+        if (_isEditing) {
+          projectData['id'] = widget.project!.id;
+          await _supabaseService.updateProject(projectData);
+        } else {
+          await _supabaseService.addProject(projectData);
+        }
+
+        widget.onProjectSaved(!_isEditing);
+
+        if (mounted) Navigator.of(context).pop();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('فشل حفظ المشروع: $e'), backgroundColor: Colors.red),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ✨ --- التحقق من صلاحية إضافة المشاريع للعرض والقيادة --- ✨
-    final bool canAddProjects = (widget.myMembership?.canAddProjects ?? false) || _isLeader;
-
-    return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            AppBar(
-              title: const Text('المشاريع'),
-              automaticallyImplyLeading: false,
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _refreshProjects,
-                  tooltip: 'تحديث القائمة',
-                ),
-              ],
-            ),
-            // ✨ --- إظهار زر الإضافة فقط لمن لديه الصلاحية --- ✨
-            if (canAddProjects)
-              ListTile(
-                leading: const Icon(Icons.add_circle_outline),
-                title: const Text('إضافة مشروع جديد'),
-                tileColor: Theme.of(context).primaryColor.withAlpha(50),
-                onTap: _showAddProjectDialog,
+    return AlertDialog(
+      title: Text(_isEditing ? 'تعديل المشروع' : 'إضافة مشروع جديد'),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'اسم المشروع'),
+                validator: (v) => (v?.trim().isEmpty ?? true) ? 'الرجاء إدخال اسم للمشروع' : null,
               ),
-            const Divider(height: 1),
-            Expanded(
-              child: FutureBuilder<List<Project>>(
-                future: _projectsFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: const InputDecoration(labelText: 'وصف المشروع'),
+                maxLines: 3,
+              ),
+              const SizedBox(height: 24),
+              TextFormField(
+                controller: _githubUrlController,
+                decoration: const InputDecoration(
+                  labelText: 'رابط مستودع GitHub (اختياري)',
+                  hintText: 'https://github.com/user/repo',
+                  prefixIcon: Icon(Icons.link),
+                ),
+                keyboardType: TextInputType.url,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) return null;
+                  if (!value.startsWith('https://github.com/')) {
+                    return 'الرجاء إدخال رابط GitHub صالح';
                   }
-                  if (snapshot.hasError) {
-                    return Center(child: Text('خطأ: ${snapshot.error}'));
-                  }
-                  if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                    return const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(16.0),
-                        child: Text(
-                          'لا توجد مشاريع بعد. ابدأ بإضافة مشروع جديد!',
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    );
-                  }
-                  final projects = snapshot.data!;
-                  return ListView.builder(
-                    padding: EdgeInsets.zero,
-                    itemCount: projects.length,
-                    itemBuilder: (context, index) {
-                      final project = projects[index];
-                      return ListTile(
-                        title: Text(project.name),
-                        selected: widget.selectedProject?.id == project.id,
-                        selectedTileColor:
-                            Theme.of(context).primaryColor.withOpacity(0.3),
-                        onTap: () {
-                          widget.onProjectSelected(project);
-                          Navigator.of(context).pop();
-                        },
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, size: 20),
-                          onPressed: () => _deleteProject(project),
-                          tooltip: 'حذف المشروع',
-                        ),
-                      );
-                    },
-                  );
+                  return null;
                 },
               ),
-            ),
-          ],
+              // --- تعديل: تم حذف الحقول الإضافية من هنا ---
+            ],
+          ),
         ),
       ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('إلغاء')),
+        FilledButton(
+          onPressed: _isLoading ? null : _saveProject,
+          child: _isLoading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('حفظ'),
+        ),
+      ],
     );
   }
-}
-
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -1199,23 +1331,41 @@ class SupabaseService {
       8, (_) => chars.codeUnitAt(random.nextInt(chars.length))));
   }
 
-  Future<String> createHub(String name) async {
+  Future<String> createHub(String name, String displayName) async {
     if (currentUserId == null) throw Exception('User not logged in');
     final secretCode = _generateSecretCode();
 
     try {
+      await _client
+        .from('hub_members')
+        .delete()
+        .eq('user_id', currentUserId!);
+
       await _client.rpc('create_hub_and_add_leader', params: {
         'hub_name': name,
         'secret_code': secretCode,
+        'leader_display_name': displayName,
       });
+
+      await _client
+        .from('hub_members')
+        .update({
+          'can_add_bugs': true,
+          'can_edit_bugs': true,
+          'can_use_chat': true,
+          'can_manage_projects': true,
+        })
+        .eq('user_id', currentUserId!)
+        .eq('role', 'leader'); 
+      
       return secretCode;
     } catch (e) {
-      debugPrint('Error creating hub via RPC: $e');
-      throw Exception('Failed to create hub. The database function might be missing or there was a server error.');
+      debugPrint('Error creating hub: $e');
+      throw Exception('Failed to create hub. A server error occurred.');
     }
   }
-
-  Future<void> joinHub(String secretCode) async {
+  
+  Future<void> joinHub(String secretCode, String displayName) async {
     if (currentUserId == null) throw Exception('User not logged in');
     final upperCaseSecretCode = secretCode.toUpperCase();
 
@@ -1230,27 +1380,71 @@ class SupabaseService {
     }
     final hubId = hubResponse['id'];
 
+     final existingMembership = await _client
+        .from('hub_members')
+        .select('id')
+        .eq('hub_id', hubId)
+        .eq('user_id', currentUserId!)
+        .maybeSingle();
+
+    if (existingMembership != null) {
+      throw Exception('You are already a member of this hub.');
+    }
+
+    await _client
+        .from('hub_members')
+        .delete()
+        .eq('user_id', currentUserId!);
+
     await _client.from('hub_members').insert({
       'hub_id': hubId,
       'user_id': currentUserId,
       'role': 'member',
+      'display_name': displayName,
     });
   }
 
   Future<Hub?> getHubForUser() async {
     if (currentUserId == null) return null;
     try {
-      final response = await _client.rpc('get_user_hub');
-      if (response is List && response.isNotEmpty) {
-        return Hub.fromJson(response[0]);
+      final memberResponse = await _client
+          .from('hub_members')
+          .select('hub_id')
+          .eq('user_id', currentUserId!)
+          .maybeSingle();
+
+      if (memberResponse == null || memberResponse['hub_id'] == null) {
+        return null;
       }
-      return null;
+
+      final hubId = memberResponse['hub_id'];
+
+      final hubResponse = await _client
+          .from('hubs')
+          .select()
+          .eq('id', hubId)
+          .single(); 
+
+      return Hub.fromJson(hubResponse);
+
     } catch (e) {
-      debugPrint('Error getting user hub: $e');
+      debugPrint('Error getting user hub info manually: $e');
       return null;
     }
   }
   
+  Future<HubMember?> getMemberInfo(String hubId) async {
+    if (currentUserId == null) return null;
+    final response = await _client
+        .from('hub_members')
+        .select()
+        .eq('hub_id', hubId)
+        .eq('user_id', currentUserId!)
+        .maybeSingle();
+    
+    return response != null ? HubMember.fromJson(response) : null;
+  }
+
    Future<List<HubMember>> getHubMembers(String hubId) async {
     final response = await _client
       .from('hub_members')
@@ -1258,13 +1452,33 @@ class SupabaseService {
       .eq('hub_id', hubId);
     return response.map((json) => HubMember.fromJson(json)).toList();
   }
+  
+  Stream<List<Map<String, dynamic>>> getHubMembersStream(String hubId) {
+    return _client
+        .from('hub_members')
+        .stream(primaryKey: ['id'])
+        .eq('hub_id', hubId);
+  }
+
+  Stream<Hub?> getHubStream(String hubId) {
+    return _client
+        .from('hubs')
+        .stream(primaryKey: ['id'])
+        .eq('id', hubId)
+        .map((listOfHubMaps) {
+      if (listOfHubMaps.isEmpty) {
+        return null; 
+      }
+      return Hub.fromJson(listOfHubMaps.first);
+    });
+  }
 
   Future<void> updateMemberPermissions({
     required int memberId, 
     required bool canAddBugs, 
     required bool canEditBugs,
     required bool canUseChat,
-    required bool canAddProjects, // ✨ --- إضافة صلاحية إضافة المشاريع --- ✨
+    required bool canManageProjects,
   }) async {
     await _client
       .from('hub_members')
@@ -1272,12 +1486,11 @@ class SupabaseService {
         'can_add_bugs': canAddBugs,
         'can_edit_bugs': canEditBugs,
         'can_use_chat': canUseChat,
-        'can_add_projects': canAddProjects, // ✨ --- إضافة صلاحية إضافة المشاريع --- ✨
+        'can_manage_projects': canManageProjects,
       })
       .eq('id', memberId);
   }
 
-  // ✨ --- دالة جديدة لتحديث اسم العضو --- ✨
   Future<void> updateMemberDisplayName({required int memberId, required String newName}) async {
     await _client
       .from('hub_members')
@@ -1285,11 +1498,32 @@ class SupabaseService {
       .eq('id', memberId);
   }
 
+  // ✨ --- تعديل: الآن الدالة تقوم بتغيير الرمز السري تلقائيًا بعد الطرد --- ✨
   Future<void> removeMember(int memberId) async {
+    // الخطوة 1: الحصول على معرف الـ Hub قبل حذف العضو
+    final memberData = await _client
+        .from('hub_members')
+        .select('hub_id')
+        .eq('id', memberId)
+        .maybeSingle();
+
+    if (memberData == null) {
+      throw Exception('Member not found.');
+    }
+    final hubId = memberData['hub_id'];
+
+    // الخطوة 2: حذف العضو
     await _client
       .from('hub_members')
       .delete()
       .eq('id', memberId);
+
+    // الخطوة 3: إنشاء رمز سري جديد وتحديث الـ Hub
+    final newSecretCode = _generateSecretCode();
+    await _client
+      .from('hubs')
+      .update({'secret_code': newSecretCode})
+      .eq('id', hubId);
   }
   
   Future<void> deleteHub(String hubId) async {
@@ -1363,6 +1597,8 @@ class SupabaseService {
     await _client.from('bugs').delete().eq('id', bugId);
   }
 
+  // --- AI Chat Functions ---
+
   Future<void> addChatMessage({ required String projectId, required String role, required String content }) async {
     if (currentUserId == null) throw Exception('User not signed in');
     await _client.from('ai_chat_messages').insert({
@@ -1388,125 +1624,17 @@ class SupabaseService {
         .limit(limit);
       return response.map((map) => AiChatMessage.fromJson(map)).toList().reversed.toList();
   }
-}
 
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-
-class GitHubService {
-  final String _githubApiBaseUrl = 'https://api.github.com';
-
-  Map<String, String>? _parseGithubUrl(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri != null && uri.host == 'github.com' && uri.pathSegments.length >= 2) {
-      final owner = uri.pathSegments[0];
-      final repo = uri.pathSegments[1].replaceAll(RegExp(r'\.git$'), '');
-      return {'owner': owner, 'repo': repo};
-    }
-    return null;
-  }
-
-  Future<String?> fetchLatestApkUrl(String githubUrl) async {
-    final parts = _parseGithubUrl(githubUrl);
-    if (parts == null) {
-      // --- تعديل: ترجمة رسالة الخطأ ---
-      throw Exception('صيغة رابط GitHub غير صالحة.');
-    }
-    final owner = parts['owner'];
-    final repo = parts['repo'];
-
-    final url = Uri.parse('$_githubApiBaseUrl/repos/$owner/$repo/releases/latest');
-    
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final List<dynamic> assets = data['assets'] ?? [];
-        
-        for (final asset in assets) {
-          final String assetName = asset['name'] ?? '';
-          if (assetName.toLowerCase().endsWith('.apk')) {
-            return asset['browser_download_url'];
-          }
-        }
-        return null; 
-      } else {
-        print('GitHub API Error (Releases): ${response.statusCode} - ${response.body}');
-        if (response.statusCode == 404) {
-          // --- تعديل: ترجمة رسالة الخطأ ---
-          throw Exception('لم يتم العثور على آخر إصدار. تأكد من وجود إصدار عام.');
-        }
-        return null;
-      }
-    } catch (e) {
-      print('Error fetching latest release: $e');
-      // --- تعديل: ترجمة رسالة الخطأ ---
-      throw Exception('فشل الاتصال بـ GitHub للحصول على الإصدارات.');
-    }
-  }
-
-  Future<String> fetchRepositoryCodeAsString(String githubUrl) async {
-    final parts = _parseGithubUrl(githubUrl);
-    // --- تعديل: ترجمة رسالة الخطأ ---
-    if (parts == null) throw Exception('صيغة رابط GitHub غير صالحة.');
-    
-    final owner = parts['owner']!;
-    final repo = parts['repo']!;
-    final codeBuilder = StringBuffer();
-
-    try {
-      final pubspecContent = await _fetchFileContent(owner, repo, 'pubspec.yaml');
-      codeBuilder.writeln('--- FILE: pubspec.yaml ---\n');
-      codeBuilder.writeln(pubspecContent);
-      codeBuilder.writeln('\n--- END OF FILE ---\n');
-    } catch (e) {
-      print('Could not fetch pubspec.yaml: $e');
-    }
-
-    await _fetchDirectoryContents(owner, repo, 'lib', codeBuilder);
-
-    return codeBuilder.toString();
-  }
-
-  Future<void> _fetchDirectoryContents(String owner, String repo, String path, StringBuffer builder) async {
-    final url = Uri.parse('$_githubApiBaseUrl/repos/$owner/$repo/contents/$path');
-    try {
-      final response = await http.get(url);
-      if (response.statusCode != 200) return;
-
-      final List<dynamic> contents = jsonDecode(response.body);
-      for (final item in contents) {
-        final String itemType = item['type'];
-        final String itemPath = item['path'];
-        if (itemType == 'file') {
-          try {
-             final fileContent = await _fetchFileContent(owner, repo, itemPath);
-             builder.writeln('--- FILE: $itemPath ---\n');
-             builder.writeln(fileContent);
-             builder.writeln('\n--- END OF FILE ---\n');
-          } catch(e) {
-             print('Could not fetch content for file $itemPath: $e');
-          }
-        } else if (itemType == 'dir') {
-          await _fetchDirectoryContents(owner, repo, itemPath, builder);
-        }
-      }
-    } catch (e) {
-      print('Error fetching directory contents for $path: $e');
-    }
-  }
-
-  Future<String> _fetchFileContent(String owner, String repo, String path) async {
-     final url = Uri.parse('$_githubApiBaseUrl/repos/$owner/$repo/contents/$path');
-     final response = await http.get(url, headers: {'Accept': 'application/vnd.github.raw'});
-     if (response.statusCode == 200) {
-       return response.body;
-     } else {
-       // --- تعديل: ترجمة رسالة الخطأ ---
-       throw Exception('فشل تحميل محتوى الملف (رمز الحالة: ${response.statusCode})');
-     }
+  Future<void> clearChatHistory(String projectId) async {
+    await _client
+      .from('ai_chat_messages')
+      .delete()
+      .eq('project_id', projectId);
   }
 }
+
+
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config.dart';
@@ -1628,8 +1756,7 @@ class GeminiService {
       return "عذراً، حدث استثناء: $e";
     }
   }
-}
-import 'package:flutter/material.dart';
+}import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/supabase_service.dart';
 import 'home_screen.dart';
@@ -1643,7 +1770,15 @@ class InitialHubScreen extends StatefulWidget {
 
 class _InitialHubScreenState extends State<InitialHubScreen> {
   final SupabaseService _supabaseService = SupabaseService();
+  final _nameController = TextEditingController();
   bool _isLoading = false;
+  bool _nameEntered = false;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
 
   void _showError(String message) {
     if (mounted) {
@@ -1654,7 +1789,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
   }
 
   Future<void> _navigateToHome() async {
-    // Mark setup as complete before navigating
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('hub_setup_complete', true);
 
@@ -1666,13 +1800,13 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
   }
 
   void _showCreateHubDialog() {
-    final nameController = TextEditingController();
+    final hubNameController = TextEditingController();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('إنشاء Hub جديد'),
         content: TextField(
-          controller: nameController,
+          controller: hubNameController,
           decoration: const InputDecoration(labelText: 'اسم الـ Hub'),
           autofocus: true,
         ),
@@ -1683,20 +1817,21 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.trim().isEmpty) {
+              if (hubNameController.text.trim().isEmpty) {
                 _showError('الرجاء إدخال اسم للـ Hub');
                 return;
               }
               Navigator.pop(context);
               setState(() => _isLoading = true);
               try {
-                final secretCode = await _supabaseService.createHub(nameController.text.trim());
-                await _showHubCreatedDialog(nameController.text.trim(), secretCode);
+                final secretCode = await _supabaseService.createHub(
+                    hubNameController.text.trim(), _nameController.text.trim());
+                await _showHubCreatedDialog(hubNameController.text.trim(), secretCode);
                 await _navigateToHome();
               } catch (e) {
                 _showError('فشل إنشاء الـ Hub: $e');
               } finally {
-                if(mounted) setState(() => _isLoading = false);
+                if (mounted) setState(() => _isLoading = false);
               }
             },
             child: const Text('إنشاء'),
@@ -1716,15 +1851,20 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-             const Text('هذا هو الرمز السري للانضمام. شاركه مع فريقك:'),
-             const SizedBox(height: 16),
-             SelectableText(
+            const Text('هذا هو الرمز السري للانضمام. شاركه مع فريقك:'),
+            const SizedBox(height: 16),
+            Center(
+              child: SelectableText(
                 secretCode,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-             ),
-             const SizedBox(height: 8),
-             const Text('ملاحظة: لا يمكن استعادة هذا الرمز، احتفظ به في مكان آمن.', style: TextStyle(fontSize: 12)),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'ملاحظة: لا يمكن استعادة هذا الرمز، احتفظ به في مكان آمن.',
+              style: TextStyle(fontSize: 12),
+            ),
           ],
         ),
         actions: [
@@ -1746,6 +1886,7 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
         content: TextField(
           controller: codeController,
           decoration: const InputDecoration(labelText: 'الرمز السري للـ Hub'),
+          autofocus: true,
         ),
         actions: [
           TextButton(
@@ -1758,18 +1899,23 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                 _showError('الرجاء إدخال الرمز السري');
                 return;
               }
-               Navigator.pop(context);
+              Navigator.pop(context);
               setState(() => _isLoading = true);
               try {
-                await _supabaseService.joinHub(codeController.text.trim());
+                await _supabaseService.joinHub(
+                    codeController.text.trim(), _nameController.text.trim());
                 await _navigateToHome();
               } catch (e) {
-                // ✨ --- FIX: Displaying the specific error from the service --- ✨
-                // This gives the user clear feedback on what went wrong.
-                final errorMessage = e.toString().replaceFirst('Exception: ', '');
+                // --- ✨ تعديل: تحسين رسائل الخطأ لتكون أوضح للمستخدم ---
+                var errorMessage = e.toString().replaceFirst('Exception: ', '');
+                if (errorMessage.contains('Hub not found with this secret code')) {
+                  errorMessage = 'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
+                } else if (errorMessage.contains('You are already a member of this hub')) {
+                  errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
+                }
                 _showError('فشل الانضمام: $errorMessage');
               } finally {
-                if(mounted) setState(() => _isLoading = false);
+                if (mounted) setState(() => _isLoading = false);
               }
             },
             child: const Text('انضمام'),
@@ -1778,7 +1924,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
       ),
     );
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -1800,18 +1945,32 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        'لتنظيم بيئة العمل، قم بإنشاء Hub جديد لفريقك أو انضم إلى Hub موجود.',
+                        'ابدأ بكتابة اسمك، ثم قم بإنشاء Hub جديد لفريقك أو انضم إلى Hub موجود.',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
-                      const SizedBox(height: 48),
+                      const SizedBox(height: 32),
+                      TextField(
+                        controller: _nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'اسمك الذي سيظهر للآخرين',
+                          prefixIcon: Icon(Icons.person_outline),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            _nameEntered = value.trim().isNotEmpty;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 32),
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
                           icon: const Icon(Icons.add_circle_outline),
                           label: const Text('إنشاء Hub جديد'),
-                          onPressed: _showCreateHubDialog,
-                          style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)),
+                          onPressed: _nameEntered ? _showCreateHubDialog : null,
+                          style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.all(16)),
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -1820,8 +1979,9 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                         child: OutlinedButton.icon(
                           icon: const Icon(Icons.login),
                           label: const Text('الانضمام إلى Hub'),
-                          onPressed: _showJoinHubDialog,
-                           style: OutlinedButton.styleFrom(padding: const EdgeInsets.all(16)),
+                          onPressed: _nameEntered ? _showJoinHubDialog : null,
+                          style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.all(16)),
                         ),
                       ),
                     ],
@@ -1832,7 +1992,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
     );
   }
 }
-
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/hub.dart';
@@ -1873,7 +2032,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
         canAddBugs: canAdd ?? member.canAddBugs,
         canEditBugs: canEdit ?? member.canEditBugs,
         canUseChat: canChat ?? member.canUseChat,
-        canAddProjects: canAddProj ?? member.canAddProjects, // ✨ --- إضافة صلاحية إضافة المشاريع --- ✨
+        canManageProjects: canAddProj ?? member.canManageProjects,
       );
       if(mounted) {
         showSuccessDialog(context, 'تم تحديث الصلاحيات بنجاح.');
@@ -1886,7 +2045,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     }
   }
 
-  // ✨ --- دالة جديدة لإظهار نافذة تعديل الاسم --- ✨
   Future<void> _editDisplayName(HubMember member) async {
     final nameController = TextEditingController(text: member.displayName);
     final newName = await showDialog<String>(
@@ -1926,12 +2084,12 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       context: context, 
       builder: (context) => AlertDialog(
         title: const Text('تأكيد الطرد'),
-        content: const Text('هل أنت متأكد من رغبتك في طرد هذا العضو؟'),
+        content: Text('هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('طرد', style: TextStyle(color: Colors.red)),
+            child: const Text('طرد وتغيير الرمز', style: TextStyle(color: Colors.red)),
           ),
         ],
       )
@@ -1941,7 +2099,8 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       try {
         await _supabaseService.removeMember(member.id);
         if (mounted) {
-           showInfoDialog(context, 'تم', 'تم طرد العضو بنجاح.');
+           // ✨ --- تعديل: تم تحديث رسالة النجاح لتعكس تغيير الرمز --- ✨
+           showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
         }
         _refreshMembers();
       } catch (e) {
@@ -1953,6 +2112,12 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   }
 
   Future<void> _deleteHub() async {
+    final members = await _supabaseService.getHubMembers(widget.hub.id);
+    if (members.length > 1) {
+      showErrorDialog(context, 'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
+      return;
+    }
+
     final hubNameController = TextEditingController();
     final confirm = await showDialog<bool>(
       context: context,
@@ -2008,7 +2173,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
 
       } catch (e) {
         if (mounted) {
-           showErrorDialog(context, 'فشل حذف الـ Hub: $e');
+           showErrorDialog(context, 'فشل حذف الـ Hub: ${e.toString()}');
         }
       } finally {
         if (mounted) {
@@ -2066,12 +2231,11 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                                    child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      // ✨ --- عرض اسم العضو القابل للتعديل --- ✨
                                       Row(
                                         children: [
                                           Expanded(
                                             child: Text(
-                                              member.displayName ?? 'عضو جديد',
+                                              member.displayName ?? 'عضو غير مسمى',
                                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -2084,14 +2248,10 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                                             )
                                         ],
                                       ),
-                                      SelectableText(
-                                        'ID: ${member.userId}',
-                                        style: const TextStyle(fontSize: 11, color: Colors.grey),
-                                      ),
-                                       if (isLeader)
-                                        const Chip(label: Text('قائد'), backgroundColor: Colors.blueGrey, padding: EdgeInsets.zero,),
-                                       if (isCurrentUser && !isLeader)
-                                        const Chip(label: Text('أنت'), backgroundColor: Colors.purple, padding: EdgeInsets.zero,),
+                                      if (isLeader)
+                                        const Chip(label: Text('قائد'), backgroundColor: Colors.blueGrey, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact,)
+                                      else if (isCurrentUser)
+                                        const Chip(label: Text('أنت'), backgroundColor: Colors.purple, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact,),
                                     ],
                                    ),
                                  ),
@@ -2106,8 +2266,8 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                              ),
                             const Divider(),
                              SwitchListTile(
-                              title: const Text('السماح بإضافة مشاريع'),
-                              value: member.canAddProjects,
+                              title: const Text('إدارة المشاريع (إضافة/تعديل)'),
+                              value: member.canManageProjects,
                                onChanged: isLeader ? null : (value) {
                                  _updatePermissions(member, canAddProj: value);
                               },
@@ -2176,7 +2336,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
 }
 
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project.dart';
 import '../models/hub.dart';
 import '../models/hub_member.dart';
@@ -2186,7 +2346,10 @@ import '../widgets/ai_assistant_panel.dart';
 import '../widgets/project_sidebar.dart';
 import '../widgets/add_edit_project_dialog.dart';
 import 'hub_management_screen.dart';
+import 'initial_hub_screen.dart';
+import 'dart:async';
 
+enum HubLoadState { loading, loaded, error }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -2200,45 +2363,182 @@ class _HomeScreenState extends State<HomeScreen> {
   Project? _selectedProject;
   Hub? _currentHub;
   HubMember? _myMembership;
-  bool _isLeader = false;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  HubLoadState _hubLoadState = HubLoadState.loading;
+
+  StreamSubscription? _hubMembersSubscription;
+  StreamSubscription? _hubSubscription;
+  // ✨ --- مؤقت للتحقق الدوري من حالة العضوية --- ✨
+  Timer? _kickCheckTimer;
+
+  bool get _isLeader => _myMembership?.role == 'leader';
 
   @override
   void initState() {
     super.initState();
-    _loadHubInfo();
+    _loadHubInfoWithRetry();
   }
 
-  Future<void> _loadHubInfo() async {
-    try {
-      final hub = await _supabaseService.getHubForUser();
-      if (hub != null && mounted) {
-        final members = await _supabaseService.getHubMembers(hub.id);
-        final currentUserId = _supabaseService.currentUserId;
-        setState(() {
-          _currentHub = hub;
-          _isLeader = hub.leaderUserId == currentUserId;
-          if (currentUserId != null) {
-            _myMembership = members.firstWhere((m) => m.userId == currentUserId, orElse: () => null as HubMember);
+  @override
+  void dispose() {
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    // ✨ --- التأكد من إلغاء المؤقت عند الخروج من الشاشة --- ✨
+    _kickCheckTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadHubInfoWithRetry({int retries = 3}) async {
+    if (!mounted) return;
+
+    setState(() {
+      _hubLoadState = HubLoadState.loading;
+    });
+
+    for (int i = 0; i < retries; i++) {
+      try {
+        final hub = await _supabaseService.getHubForUser();
+        if (hub != null && mounted) {
+          final member = await _supabaseService.getMemberInfo(hub.id);
+          // ✨ --- التحقق من أن العضو لا يزال موجودًا قبل إكمال التحميل --- ✨
+          if (member != null) {
+            setState(() {
+              _currentHub = hub;
+              _myMembership = member;
+              _hubLoadState = HubLoadState.loaded;
+            });
+            _setupRealtimeListeners(hub.id);
+            return;
           }
-        });
+        }
+      } catch (e) {
+        debugPrint('Error loading hub info (attempt ${i + 1}): $e');
+      }
+
+      if (i < retries - 1) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _hubLoadState = HubLoadState.error;
+      });
+      _handleHubDeleted();
+    }
+  }
+
+  void _handleMemberKicked() {
+    _cleanupAndNavigate(
+      title: 'تم طردك',
+      content:
+          'لقد تم إزالتك من الـ Hub. يجب عليك الانضمام إلى hub جديد أو إنشاء واحد.',
+    );
+  }
+
+  void _handleHubDeleted() {
+    _cleanupAndNavigate(
+      title: 'Hub لم يعد موجوداً',
+      content:
+          'يبدو أن الـ Hub الذي كنت فيه قد تم حذفه. يجب عليك الانضمام أو إنشاء hub جديد.',
+    );
+  }
+
+  void _cleanupAndNavigate(
+      {required String title, required String content}) async {
+    if (!mounted) return;
+
+    // ✨ --- إيقاف جميع الاشتراكات والمؤقتات --- ✨
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    _kickCheckTimer?.cancel();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('hub_setup_complete', false);
+
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (context) => const InitialHubScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text('موافق'),
+          )
+        ],
+      ),
+    );
+  }
+
+  // ✨ --- دالة جديدة للتحقق بشكل استباقي من حالة الطرد --- ✨
+  Future<void> _checkIfKicked() async {
+    if (_currentHub == null || !mounted) return;
+
+    try {
+      final member = await _supabaseService.getMemberInfo(_currentHub!.id);
+      if (member == null && mounted) {
+        // إذا لم يتم العثور على العضو، فهذا يعني أنه تم طرده
+        _handleMemberKicked();
       }
     } catch (e) {
-      print("Error loading hub info: $e");
+      debugPrint("Error during periodic kick check: $e");
     }
   }
 
-  Future<void> _launchUrl(String? urlString) async {
-    if (urlString != null) {
-      final uri = Uri.parse(urlString);
-      if (!await launchUrl(uri)) {
-        if(mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('تعذر فتح الرابط: $urlString')),
-          );
+  void _setupRealtimeListeners(String hubId) {
+    _hubMembersSubscription?.cancel();
+    _hubSubscription?.cancel();
+    _kickCheckTimer?.cancel();
+
+    // 1. مراقبة قائمة الأعضاء بالكامل (التحديث الفوري)
+    _hubMembersSubscription =
+        _supabaseService.getHubMembersStream(hubId).listen((membersList) {
+      if (!mounted) return;
+
+      final currentUserStillAMember = membersList
+          .any((m) => m['user_id'] == _supabaseService.currentUserId);
+
+      if (currentUserStillAMember) {
+        final myData = membersList
+            .firstWhere((m) => m['user_id'] == _supabaseService.currentUserId);
+        if (mounted) {
+          setState(() {
+            _myMembership = HubMember.fromJson(myData);
+          });
+        }
+      } else {
+        _handleMemberKicked();
+      }
+    });
+
+    // 2. مراقبة الـ Hub نفسه (للحذف)
+    _hubSubscription = _supabaseService.getHubStream(hubId).listen((hub) {
+      if (!mounted) return;
+      if (hub == null) {
+        _handleHubDeleted();
+      } else {
+        if (mounted) {
+          setState(() {
+            _currentHub = hub;
+          });
         }
       }
-    }
+    });
+
+    // ✨ --- 3. بدء مؤقت دوري كإجراء احترازي لضمان التحقق كل 5 ثوانٍ --- ✨
+    _kickCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _checkIfKicked();
+    });
   }
 
   void _onProjectSelected(Project? project) {
@@ -2246,18 +2546,18 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedProject = project;
     });
   }
-  
+
   void _editProject(Project project) {
     showDialog(
       context: context,
       builder: (context) => AddEditProjectDialog(
         project: project,
         onProjectSaved: (isNew) async {
-           final projects = await _supabaseService.getProjects();
-           final updatedProject = projects.firstWhere((p) => p.id == project.id, orElse: () => project);
-           setState(() {
-             _selectedProject = updatedProject;
-           });
+          final projects = await _supabaseService.getProjects();
+          setState(() {
+            _selectedProject = projects.firstWhere((p) => p.id == project.id,
+                orElse: () => project);
+          });
         },
       ),
     );
@@ -2265,50 +2565,69 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showHubInfo() {
     if (_currentHub == null) return;
-     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('معلومات Hub: ${_currentHub!.name}'),
-        content: Column(
-           mainAxisSize: MainAxisSize.min,
-           crossAxisAlignment: CrossAxisAlignment.start,
-           children: [
-              const Text('الرمز السري لمشاركة الفريق:'),
-              const SizedBox(height: 8),
-              SelectableText(
-                _currentHub!.secretCode,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+    showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: Text('معلومات Hub: ${_currentHub!.name}'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('الرمز السري لمشاركة الفريق:'),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    _currentHub!.secretCode,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
               ),
-           ],
-        ),
-        actions: [
-          if (_isLeader)
-            TextButton.icon(
-              icon: const Icon(Icons.admin_panel_settings_outlined),
-              label: const Text('إدارة الأعضاء'),
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (context) => HubManagementScreen(hub: _currentHub!)));
-              },
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إغلاق'),
-          )
-        ],
-      )
-    );
+              actions: [
+                if (_isLeader)
+                  TextButton.icon(
+                    icon: const Icon(Icons.admin_panel_settings_outlined),
+                    label: const Text('إدارة الأعضاء'),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  HubManagementScreen(hub: _currentHub!)));
+                    },
+                  ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('إغلاق'),
+                )
+              ],
+            ));
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_hubLoadState == HubLoadState.loading) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('جاري تحميل بيانات الفريق...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
         title: Text(_selectedProject?.name ?? _currentHub?.name ?? 'DevNest'),
         actions: [
           if (_currentHub != null)
-             IconButton(
+            IconButton(
               icon: const Icon(Icons.hub_outlined),
               onPressed: _showHubInfo,
               tooltip: 'معلومات الـ Hub',
@@ -2323,7 +2642,7 @@ class _HomeScreenState extends State<HomeScreen> {
       drawer: ProjectSidebar(
         onProjectSelected: _onProjectSelected,
         selectedProject: _selectedProject,
-        myMembership: _myMembership, // ✨ --- تمرير الصلاحيات للشريط الجانبي --- ✨
+        myMembership: _myMembership,
       ),
       endDrawer: AiAssistantPanel(
         projectContext: _selectedProject,
@@ -2336,14 +2655,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.rule_folder_outlined, size: 100, color: Colors.grey[700]),
+                    Icon(Icons.rule_folder_outlined,
+                        size: 100, color: Colors.grey[700]),
                     const SizedBox(height: 24),
                     Text(
                       'الرجاء اختيار مشروع من القائمة للبدء',
                       style: Theme.of(context).textTheme.titleMedium,
                       textAlign: TextAlign.center,
                     ),
-                     const SizedBox(height: 8),
+                    const SizedBox(height: 8),
                     Text(
                       'أو قم بإنشاء مشروع جديد',
                       style: Theme.of(context).textTheme.bodySmall,
@@ -2362,27 +2682,29 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/bug.dart';
 import '../models/project.dart';
-import '../models/hub_member.dart'; // ✨ --- استيراد موديل العضو --- ✨
+import '../models/hub_member.dart'; 
 import '../services/supabase_service.dart';
 import '../widgets/bug_card.dart';
 import '../add_bug_dialog.dart';
-import '../widgets/app_dialogs.dart'; // ✨ --- استيراد ملف نوافذ الحوار --- ✨
+import '../widgets/app_dialogs.dart'; 
 import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 
 class BugTrackerView extends StatefulWidget {
   final Project project;
   final VoidCallback onEditProject;
-  final HubMember? myMembership; // ✨ --- استقبال صلاحيات المستخدم --- ✨
+  final HubMember? myMembership; 
   
   const BugTrackerView({
     super.key, 
     required this.project, 
     required this.onEditProject,
-    required this.myMembership, // ✨ --- استقبال صلاحيات المستخدم --- ✨
+    required this.myMembership, 
   });
 
   @override
@@ -2394,7 +2716,6 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
   late Future<List<Bug>> _bugsFuture;
   late TabController _tabController;
   
-  // --- تعديل: تمت ترجمة حالات الأخطاء ---
   final List<String> _statuses = ['مفتوح', 'قيد التنفيذ', 'تم الحل'];
 
   @override
@@ -2430,14 +2751,12 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
     return bugs.where((bug) => bug.status == status).toList();
   }
 
-  // ✨ --- دالة لفتح الروابط الخارجية --- ✨
   Future<void> _launchUrl(String? urlString) async {
     if (urlString != null) {
       final uri = Uri.parse(urlString);
       if (!await launchUrl(uri)) {
         if(mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-            // --- تعديل: تمت ترجمة رسالة الخطأ ---
             SnackBar(content: Text('تعذر فتح الرابط: $urlString')),
           );
         }
@@ -2447,6 +2766,10 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
 
   @override
   Widget build(BuildContext context) {
+    // ✨ --- Define permissions for easier access --- ✨
+    final bool canAddBugs = widget.myMembership?.canAddBugs ?? false;
+    final bool canManageProjects = widget.myMembership?.canManageProjects ?? false;
+
     return Scaffold(
       body: Column(
         children: [
@@ -2474,9 +2797,9 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
                   return Center(child: Text('حدث خطأ: ${snapshot.error}'));
                 }
                 if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                  return Center(
+                  return const Center(
                     child: Padding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: EdgeInsets.all(16.0),
                       child: Text(
                         'لا توجد أخطاء في هذا المشروع حاليًا. عظيم!',
                          textAlign: TextAlign.center,
@@ -2504,12 +2827,12 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
         children: [
-          SpeedDialChild(
-            child: const Icon(Icons.bug_report),
-            label: 'إضافة خطأ جديد',
-            onTap: () {
-              // ✨ --- التحقق من صلاحية إضافة الأخطاء --- ✨
-              if (widget.myMembership?.canAddBugs ?? false) {
+          // ✨ --- Add Bug button with permission check --- ✨
+          if(canAddBugs)
+            SpeedDialChild(
+              child: const Icon(Icons.bug_report),
+              label: 'إضافة خطأ جديد',
+              onTap: () {
                   showDialog(
                   context: context,
                   builder: (context) => AddBugDialog(
@@ -2517,17 +2840,15 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
                     onBugAdded: refreshBugs,
                   ),
                 );
-              } else {
-                showPermissionDeniedDialog(context);
               }
-            }
-          ),
-          SpeedDialChild(
-            child: const Icon(Icons.edit),
-            label: 'تعديل تفاصيل المشروع',
-            onTap: widget.onEditProject,
-          ),
-          // --- تعديل: زر تحميل APK أصبح هنا فقط ---
+            ),
+          // ✨ --- Edit Project button with permission check --- ✨
+          if (canManageProjects)
+            SpeedDialChild(
+              child: const Icon(Icons.edit),
+              label: 'تعديل تفاصيل المشروع',
+              onTap: widget.onEditProject,
+            ),
           if (widget.project.apkDownloadUrl != null)
             SpeedDialChild(
               child: const Icon(Icons.download_for_offline),
@@ -2537,7 +2858,6 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
             ),
         ],
       ),
-      // ✨ --- نقل الزر العائم إلى اليمين (يسار في وضع LTR) --- ✨
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );
   }
@@ -2556,7 +2876,7 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
           bug: bugs[index],
           onStatusChanged: refreshBugs,
           onDeleted: refreshBugs,
-          myMembership: widget.myMembership, // ✨ --- تمرير الصلاحيات لبطاقة الخطأ --- ✨
+          myMembership: widget.myMembership,
         );
       },
     );
@@ -2630,11 +2950,12 @@ class HubMember {
   final String hubId;
   final String userId;
   final String role;
-  String? displayName; // ✨ --- إضافة اسم العضو --- ✨
+  String? displayName;
   final bool canAddBugs;
   final bool canEditBugs;
   final bool canUseChat;
-  final bool canAddProjects; // ✨ --- إضافة صلاحية إضافة المشاريع --- ✨
+  // ✨ --- Renamed for clarity to cover add/edit project --- ✨
+  final bool canManageProjects; 
 
   HubMember({
     required this.id,
@@ -2645,7 +2966,7 @@ class HubMember {
     required this.canAddBugs,
     required this.canEditBugs,
     required this.canUseChat,
-    required this.canAddProjects,
+    required this.canManageProjects,
   });
 
   factory HubMember.fromJson(Map<String, dynamic> json) {
@@ -2654,15 +2975,15 @@ class HubMember {
       hubId: json['hub_id'],
       userId: json['user_id'],
       role: json['role'],
-      displayName: json['display_name'], // ✨ --- إضافة اسم العضو --- ✨
-      canAddBugs: json['can_add_bugs'],
-      canEditBugs: json['can_edit_bugs'],
+      displayName: json['display_name'],
+      canAddBugs: json['can_add_bugs'] ?? false,
+      canEditBugs: json['can_edit_bugs'] ?? false,
       canUseChat: json['can_use_chat'] ?? false,
-      canAddProjects: json['can_add_projects'] ?? false, // ✨ --- إضافة صلاحية إضافة المشاريع --- ✨
+      // ✨ --- Mapped from 'can_add_projects' to 'canManageProjects' --- ✨
+      canManageProjects: json['can_manage_projects'] ?? false, 
     );
   }
 }
-
 
 
 class Bug {
@@ -2736,3 +3057,4 @@ class AiChatMessage {
     );
   }
 }
+
