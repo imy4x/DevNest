@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/bug.dart';
 import '../models/hub_member.dart';
 import '../models/project.dart';
@@ -45,7 +45,6 @@ class BugCard extends StatelessWidget {
     }
   }
   
-  // --- ✨ تعديل (1): إعادة كتابة منطق الذكاء الاصطناعي بالكامل ليدعم الرد التفاعلي --- ✨
   void _showAiSuggestion(BuildContext context) async {
     if (project.githubUrl == null || project.githubUrl!.isEmpty) {
       showInfoDialog(
@@ -78,22 +77,19 @@ class BugCard extends StatelessWidget {
 
       final codeContext = await githubService.fetchRepositoryCodeAsString(project.githubUrl!);
       
-      // الدالة الآن تعيد نص بصيغة JSON
       final rawJsonResult = await geminiService.analyzeBugWithCodeContext(
         bugTitle: bug.title,
         bugDescription: bug.description,
         codeContext: codeContext,
       );
 
-      if (context.mounted) Navigator.pop(context); // إغلاق نافذة التحميل
+      if (context.mounted) Navigator.pop(context);
 
-      // تحليل الـ JSON
       final analysisData = jsonDecode(rawJsonResult) as Map<String, dynamic>;
       final verbalAnalysis = analysisData['verbalAnalysis'] as String? ?? 'لم يتم توفير تحليل.';
       final codeSuggestions = analysisData['codeSuggestions'] as String? ?? 'لم يتم توفير اقتراحات للكود.';
       final professionalPrompt = analysisData['professionalPrompt'] as String? ?? 'لم يتم إنشاء برومبت.';
       
-      // عرض النافذة التفاعلية الجديدة
       _showInteractiveAnalysisDialog(context, verbalAnalysis, codeSuggestions, professionalPrompt);
 
     } catch (e) {
@@ -104,14 +100,18 @@ class BugCard extends StatelessWidget {
     }
   }
 
-  // --- ✨ تعديل (2): نافذة العرض التفاعلية الجديدة --- ✨
   void _showInteractiveAnalysisDialog(BuildContext context, String verbalAnalysis, String codeSuggestions, String professionalPrompt) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('تحليل المساعد الذكي'),
         content: SingleChildScrollView(
-          child: MarkdownBody(data: verbalAnalysis), // عرض التحليل الشفهي فقط
+          child: MarkdownBody(
+            data: verbalAnalysis,
+            onTapLink: (text, href, title) {
+              if(href != null) launchUrl(Uri.parse(href));
+            },
+          ),
         ),
         actionsAlignment: MainAxisAlignment.spaceBetween,
         actions: <Widget>[
@@ -123,13 +123,10 @@ class BugCard extends StatelessWidget {
             },
           ),
           TextButton.icon(
-            icon: const Icon(Icons.copy_all_outlined, size: 18),
-            label: const Text('نسخ البرومبت'),
+            icon: const Icon(Icons.auto_fix_high, size: 18),
+            label: const Text('استخدام البرومبت'),
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: professionalPrompt));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('تم نسخ البرومبت الاحترافي إلى الحافظة')),
-              );
+              _showProfessionalPromptDialog(context, professionalPrompt);
             },
           ),
           TextButton(
@@ -141,19 +138,78 @@ class BugCard extends StatelessWidget {
     );
   }
 
-  // --- ✨ تعديل (3): نافذة منفصلة لعرض تعديلات الكود --- ✨
   void _showCodeSuggestionsDialog(BuildContext context, String codeSuggestions) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('التعديلات المقترحة على الكود'),
         content: SizedBox(
-          width: MediaQuery.of(context).size.width * 0.8, // عرض أكبر للنافذة
+          width: MediaQuery.of(context).size.width * 0.8,
           child: SingleChildScrollView(
-            child: MarkdownBody(data: codeSuggestions, selectable: true),
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: MarkdownBody(
+                data: codeSuggestions, 
+                selectable: true,
+                onTapLink: (text, href, title) {
+                  if(href != null) launchUrl(Uri.parse(href));
+                },
+              ),
+            ),
           ),
         ),
         actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _showProfessionalPromptDialog(BuildContext context, String professionalPrompt) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('البرومبت الاحترافي'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'يمكنك نسخ هذا النص وإرساله إلى مساعد ذكاء اصطناعي آخر مع الملفات المذكورة فيه للحصول على مساعدة إضافية.',
+                style: TextStyle(fontSize: 14),
+              ),
+              const Divider(height: 24),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade700)
+                ),
+                child: SelectableText(
+                  professionalPrompt,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          TextButton.icon(
+            icon: const Icon(Icons.copy_all_outlined, size: 18),
+            label: const Text('نسخ البرومبت'),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: professionalPrompt));
+              Navigator.of(context).pop();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('تم نسخ البرومبت إلى الحافظة')),
+              );
+            },
+          ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('إغلاق'),
@@ -293,26 +349,29 @@ class BugCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  DateFormat.yMMMd('ar').format(bug.createdAt),
-                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                  // ✨ تعديل: عرض التاريخ بصيغة YYYY-MM-DD
+                  '${bug.createdAt.year}-${bug.createdAt.month.toString().padLeft(2, '0')}-${bug.createdAt.day.toString().padLeft(2, '0')}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[500], letterSpacing: 0.5),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                icon: const Icon(Icons.psychology_alt, size: 18),
-                label: const Text('فحص الخطأ بالذكاء الاصطناعي'),
-                onPressed: () => _showAiSuggestion(context),
-                style: OutlinedButton.styleFrom(
-                   side: BorderSide(color: Theme.of(context).primaryColor.withOpacity(0.5))
+            if (bug.status != 'تم الحل')
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.psychology_alt, size: 18),
+                  label: const Text('فحص الخطأ بالذكاء الاصطناعي'),
+                  onPressed: () => _showAiSuggestion(context),
+                  style: OutlinedButton.styleFrom(
+                     side: BorderSide(color: Theme.of(context).primaryColor.withOpacity(0.5))
+                  ),
                 ),
-              ),
-            )
+              )
           ],
         ),
       ),
     );
   }
 }
+
