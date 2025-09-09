@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../models/ai_chat_message.dart';
@@ -6,17 +8,25 @@ import '../models/project.dart';
 import '../models/bug.dart';
 
 class GeminiService {
-  final String _apiUrl =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=$geminiApiKey';
+  // --- START: NEW CHANGES FOR MODEL FALLBACK ---
+  final String _proModel = 'gemini-2.5-pro';
+  final String _flashModel = 'gemini-2.5-flash';
+  String _currentModel = 'gemini-2.5-pro';
+  Timer? _fallbackTimer;
 
-  Future<String> generalChat({
+  String _getApiUrl(String model) =>
+      'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$geminiApiKey';
+  // --- END: NEW CHANGES FOR MODEL FALLBACK ---
+
+  /// Handles a general chat conversation with fallback logic.
+  /// Returns a tuple containing the response message and a boolean indicating if a model switch occurred.
+  Future<(String, bool)> generalChat({
     required String userMessage,
     required Project? project,
     required List<Bug> bugs,
     required List<AiChatMessage> history,
     String? codeContext,
   }) async {
-    
     String systemContext = '''
 أنت "مساعد DevNest"، مساعد ذكاء اصطناعي خبير ومبرمج محترف تتحدث اللغة العربية بطلاقة.
 مهمتك هي مساعدة المطورين في حل مشاكلهم البرمجية، وتقديم اقتراحات بناءة، وشرح المفاهيم المعقدة بوضوح.
@@ -28,7 +38,6 @@ class GeminiService {
       systemContext += 'الاسم: ${project.name}\n';
       systemContext += 'الوصف: ${project.description ?? "لا يوجد"}\n';
       systemContext += 'رابط GitHub: ${project.githubUrl ?? "غير محدد"}\n';
-
 
       if (bugs.isNotEmpty) {
         systemContext += '\nآخر الأخطاء المسجلة:\n';
@@ -45,47 +54,90 @@ class GeminiService {
 
     if (codeContext != null && codeContext.isNotEmpty) {
       systemContext += '\n--- كود المشروع من مستودع GitHub ---\n';
-      systemContext += 'فيما يلي محتويات الملفات الرئيسية في المشروع للمساعدة في التحليل:\n\n';
+      systemContext +=
+          'فيما يلي محتويات الملفات الرئيسية في المشروع للمساعدة في التحليل:\n\n';
       systemContext += codeContext;
       systemContext += '\n--- نهاية كود المشروع ---\n';
     }
 
     final List<Map<String, dynamic>> contents = [];
-    
     for (var msg in history) {
       contents.add({
         'role': msg.role,
-        'parts': [{'text': msg.content}]
+        'parts': [
+          {'text': msg.content}
+        ]
       });
     }
-
     contents.add({
       'role': 'user',
-      'parts': [{'text': userMessage}]
+      'parts': [
+        {'text': userMessage}
+      ]
     });
 
+    final body = {
+      'contents': contents,
+      'systemInstruction': {
+        'parts': [
+          {'text': systemContext}
+        ]
+      }
+    };
 
     try {
       final response = await http.post(
-        Uri.parse(_apiUrl),
+        Uri.parse(_getApiUrl(_currentModel)),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'contents': contents,
-          'systemInstruction': {
-            'parts': [{'text': systemContext}]
-          }
-        }),
+        body: jsonEncode(body),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return data['candidates'][0]['content']['parts'][0]['text'];
+        // --- FIX: Explicitly cast dynamic type to String ---
+        return (
+          data['candidates'][0]['content']['parts'][0]['text'] as String,
+          false
+        );
       } else {
-        print('Gemini Error: ${response.body}');
-        return "عذراً، حدث خطأ أثناء التواصل مع المساعد الذكي. رمز الحالة: ${response.statusCode}";
+        throw HttpException('API Error: ${response.statusCode}');
       }
     } catch (e) {
-      return "عذراً، حدث استثناء: $e";
+      if (_currentModel == _proModel) {
+        print('Error with Pro model, falling back to Flash. Error: $e');
+        _currentModel = _flashModel;
+
+        _fallbackTimer?.cancel();
+        _fallbackTimer = Timer(const Duration(seconds: 25), () {
+          print('Fallback timer expired. Reverting to Pro model.');
+          _currentModel = _proModel;
+        });
+
+        try {
+          final fallbackResponse = await http.post(
+            Uri.parse(_getApiUrl(_currentModel)),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          );
+
+          if (fallbackResponse.statusCode == 200) {
+            final data = jsonDecode(fallbackResponse.body);
+            // --- FIX: Explicitly cast dynamic type to String ---
+            final content =
+                data['candidates'][0]['content']['parts'][0]['text'] as String;
+            return (content, true); // Success with fallback
+          } else {
+            return (
+              "عذراً، حدث خطأ أثناء التواصل مع المساعد الذكي. رمز الحالة: ${fallbackResponse.statusCode}",
+              false
+            );
+          }
+        } catch (fallbackError) {
+          return ("عذراً، حدث استثناء بعد التبديل: $fallbackError", false);
+        }
+      } else {
+        return ("عذراً، حدث استثناء: $e", false);
+      }
     }
   }
 
@@ -163,34 +215,77 @@ $codeContext
 
 تذكر، أجب فقط بكائن JSON الخام والصالح.
 ''';
+    final body = {
+      'contents': [
+        {
+          'parts': [
+            {'text': prompt}
+          ]
+        }
+      ],
+      'generationConfig': {
+        'responseMimeType': 'application/json',
+      }
+    };
+
     try {
       final response = await http.post(
-        Uri.parse(_apiUrl),
+        Uri.parse(_getApiUrl(_currentModel)),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'contents': [{'parts': [{'text': prompt}]}],
-          'generationConfig': {
-            'responseMimeType': 'application/json',
-          }
-        }),
+        body: jsonEncode(body),
       );
-
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return data['candidates'][0]['content']['parts'][0]['text'];
+        // --- FIX: Explicitly cast dynamic type to String ---
+        return data['candidates'][0]['content']['parts'][0]['text'] as String;
       } else {
-        return jsonEncode({
-          "verbalAnalysis": "عذراً، لم أتمكن من الحصول على اقتراح. رمز الحالة: ${response.statusCode}",
-          "codeSuggestions": "Error: ${response.statusCode}\n${response.body}",
-          "professionalPrompt": "الرجاء المساعدة في حل مشكلة أدت إلى رمز الحالة ${response.statusCode} عند محاولة تحليل الخطأ."
-        });
+        throw HttpException('API Error: ${response.statusCode}');
       }
     } catch (e) {
-       return jsonEncode({
+      if (_currentModel == _proModel) {
+        print(
+            'Error with Pro model for bug analysis, falling back to Flash. Error: $e');
+        _currentModel = _flashModel;
+
+        _fallbackTimer?.cancel();
+        _fallbackTimer = Timer(const Duration(seconds: 25), () {
+          print('Fallback timer expired. Reverting to Pro model.');
+          _currentModel = _proModel;
+        });
+
+        try {
+          final fallbackResponse = await http.post(
+            Uri.parse(_getApiUrl(_currentModel)),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          );
+          if (fallbackResponse.statusCode == 200) {
+            final data = jsonDecode(fallbackResponse.body);
+            // --- FIX: Explicitly cast dynamic type to String ---
+            return data['candidates'][0]['content']['parts'][0]['text']
+                as String;
+          } else {
+            throw HttpException(
+                'Fallback API Error: ${fallbackResponse.statusCode}');
+          }
+        } catch (fallbackError) {
+          return jsonEncode({
+            "verbalAnalysis":
+                "عذراً، حدث استثناء مزدوج أثناء محاولة تحليل الخطأ.",
+            "codeSuggestions": "Exception: ${fallbackError.toString()}",
+            "professionalPrompt":
+                "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي بعد محاولة التبديل: ${fallbackError.toString()}"
+          });
+        }
+      } else {
+        return jsonEncode({
           "verbalAnalysis": "عذراً، حدث استثناء أثناء محاولة تحليل الخطأ.",
           "codeSuggestions": "Exception: ${e.toString()}",
-          "professionalPrompt": "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي: ${e.toString()}"
+          "professionalPrompt":
+              "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي: ${e.toString()}"
         });
+      }
     }
   }
 }
+

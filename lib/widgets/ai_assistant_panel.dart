@@ -101,7 +101,9 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
         _codeContext = code;
       });
     } catch (e) {
-      showErrorDialog(context, 'فشل تحليل الكود: $e');
+      if (mounted) {
+        showErrorDialog(context, 'فشل تحليل الكود: $e');
+      }
     } finally {
       if (mounted) {
         setState(() => _isAnalyzingCode = false);
@@ -110,7 +112,6 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   }
 
   Future<void> _sendMessage() async {
-    // --- تعديل (3): تم نقل التحقق من الصلاحية إلى هنا ---
     final canChat = widget.myMembership?.canUseChat ?? false;
     if (!canChat) {
       showPermissionDeniedDialog(context);
@@ -123,7 +124,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     final userMessage = _controller.text.trim();
     final projectId = widget.projectContext!.id;
     _controller.clear();
-    FocusScope.of(context).unfocus(); // إخفاء لوحة المفاتيح بعد الإرسال
+    FocusScope.of(context).unfocus();
 
     await _supabaseService.addChatMessage(
         projectId: projectId, role: 'user', content: userMessage);
@@ -134,13 +135,25 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     final bugs = await _supabaseService.getBugsForProject(projectId);
     final history = await _supabaseService.getRecentChatHistory(projectId);
 
-    final response = await _geminiService.generalChat(
+    // --- START: MODIFIED FOR FALLBACK AND SNACKBAR ---
+    final (response, modelSwitched) = await _geminiService.generalChat(
       userMessage: userMessage,
       project: widget.projectContext,
       bugs: bugs,
       history: history,
       codeContext: _codeContext,
     );
+
+    if (modelSwitched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('حدث خطأ، تم التبديل إلى نموذج أسرع مؤقتاً.'),
+          duration: const Duration(seconds: 4),
+          backgroundColor: Colors.orange.shade700,
+        ),
+      );
+    }
+    // --- END: MODIFIED FOR FALLBACK AND SNACKBAR ---
 
     await _supabaseService.addChatMessage(
         projectId: projectId, role: 'model', content: response);
@@ -152,7 +165,6 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   }
 
   Future<void> _clearChatHistory() async {
-    // --- تعديل (3): إضافة التحقق من صلاحية القائد هنا ---
     final bool isLeader = widget.myMembership?.role == 'leader';
     if (!isLeader) {
       showPermissionDeniedDialog(context);
@@ -165,7 +177,8 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('مسح المحادثة'),
-        content: const Text('هل أنت متأكد من رغبتك في مسح جميع رسائل هذه المحادثة؟ لا يمكن التراجع عن هذا الإجراء.'),
+        content: const Text(
+            'هل أنت متأكد من رغبتك في مسح جميع رسائل هذه المحادثة؟ لا يمكن التراجع عن هذا الإجراء.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -193,12 +206,13 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final bool hasProject = widget.projectContext != null;
-    
-    // --- تعديل (2): إضافة Scaffold للتعامل مع لوحة المفاتيح ---
+    // --- START: NEW VARIABLE FOR EASIER STATE CHECKING ---
+    final bool isInteractable = !_isLoading && hasProject && !_isAnalyzingCode;
+    // --- END: NEW VARIABLE ---
+
     return Drawer(
       child: Scaffold(
         resizeToAvoidBottomInset: true,
@@ -211,8 +225,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // --- تعديل (3): إظهار الزر دائماً والتحقق من الصلاحية عند الضغط ---
-                    if(hasProject)
+                    if (hasProject)
                       IconButton(
                         icon: const Icon(Icons.delete_sweep_outlined),
                         onPressed: _clearChatHistory,
@@ -220,10 +233,10 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                       )
                     else
                       const SizedBox(width: 48),
-                    
                     Column(
                       children: [
-                        Text('المساعد الذكي', style: Theme.of(context).textTheme.headlineSmall),
+                        Text('المساعد الذكي',
+                            style: Theme.of(context).textTheme.headlineSmall),
                         if (hasProject)
                           Text('مشروع: ${widget.projectContext!.name}',
                               style: Theme.of(context).textTheme.bodySmall),
@@ -233,6 +246,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                   ],
                 ),
                 const Divider(height: 24),
+                // --- START: MODIFIED LOADING INDICATOR ---
                 if (_isAnalyzingCode)
                   const Padding(
                       padding: EdgeInsets.only(bottom: 12.0),
@@ -240,9 +254,10 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                         children: [
                           LinearProgressIndicator(),
                           SizedBox(height: 4),
-                          Text('جاري قراءة الملفات...')
+                          Text('جاري قراءة الملفات... الرجاء الانتظار')
                         ],
                       )),
+                // --- END: MODIFIED LOADING INDICATOR ---
                 Expanded(
                   child: !hasProject
                       ? const Center(
@@ -289,36 +304,41 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                           },
                         ),
                 ),
-                // --- تعديل (2): تصميم جديد لحقل الإدخال يدعم الأسطر المتعددة ---
                 Container(
                   margin: const EdgeInsets.only(top: 8.0),
                   padding: const EdgeInsets.symmetric(horizontal: 12.0),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).inputDecorationTheme.fillColor,
-                    borderRadius: BorderRadius.circular(30.0),
-                    border: Border.all(color: Theme.of(context).dividerColor)
-                  ),
+                      color: Theme.of(context).inputDecorationTheme.fillColor,
+                      borderRadius: BorderRadius.circular(30.0),
+                      border:
+                          Border.all(color: Theme.of(context).dividerColor)),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Expanded(
                         child: TextField(
                           controller: _controller,
-                          enabled: !_isLoading && hasProject,
+                          // --- START: MODIFIED ENABLED AND HINTTEXT ---
+                          enabled: isInteractable,
                           decoration: InputDecoration(
-                            hintText: !hasProject ? 'اختر مشروعاً أولاً' : 'اسأل عن مشروعك...',
+                            hintText: _isAnalyzingCode
+                                ? 'الرجاء الانتظار...'
+                                : !hasProject
+                                    ? 'اختر مشروعاً أولاً'
+                                    : 'اسأل عن مشروعك...',
                             border: InputBorder.none,
                           ),
+                          // --- END: MODIFIED ENABLED AND HINTTEXT ---
                           keyboardType: TextInputType.multiline,
                           minLines: 1,
                           maxLines: 5,
                           textInputAction: TextInputAction.newline,
-                          // تم حذف onSubmitted للسماح بإدخال سطر جديد
                         ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.send),
-                        onPressed: (_isLoading || !hasProject) ? null : _sendMessage,
+                        // --- MODIFIED ONPRESSED ---
+                        onPressed: isInteractable ? _sendMessage : null,
                         color: Theme.of(context).primaryColor,
                       ),
                     ],
@@ -362,8 +382,9 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   Widget _buildMessageBubble(AiChatMessage message) {
     final isUser = message.role == 'user';
     return Align(
-      alignment:
-          isUser ? AlignmentDirectional.centerEnd : AlignmentDirectional.centerStart,
+      alignment: isUser
+          ? AlignmentDirectional.centerEnd
+          : AlignmentDirectional.centerStart,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
         margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
