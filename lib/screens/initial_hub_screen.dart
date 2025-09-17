@@ -40,41 +40,64 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('إنشاء Hub جديد'),
-        content: TextField(
-          controller: hubNameController,
-          decoration: const InputDecoration(labelText: 'اسم الـ Hub'),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (hubNameController.text.trim().isEmpty) {
-                showErrorDialog(context, 'الرجاء إدخال اسم للـ Hub');
-                return;
-              }
-              Navigator.pop(context);
-              setState(() => _isLoading = true);
-              try {
-                final secretCode = await _supabaseService.createHub(
-                    hubNameController.text.trim(), _nameController.text.trim());
-                await _showHubCreatedDialog(hubNameController.text.trim(), secretCode);
-                await _navigateToHome();
-              } catch (e) {
-                 if(mounted) showErrorDialog(context, 'فشل إنشاء الـ Hub: $e');
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-            child: const Text('إنشاء'),
-          ),
-        ],
-      ),
+      builder: (context) {
+        bool isCreating = false;
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('إنشاء Hub جديد'),
+              content: TextField(
+                controller: hubNameController,
+                decoration: const InputDecoration(labelText: 'اسم الـ Hub'),
+                autofocus: true,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isCreating ? null : () => Navigator.pop(context),
+                  child: const Text('إلغاء'),
+                ),
+                ElevatedButton(
+                  onPressed: isCreating
+                      ? null
+                      : () async {
+                          if (hubNameController.text.trim().isEmpty) {
+                            showErrorDialog(context, 'الرجاء إدخال اسم للـ Hub');
+                            return;
+                          }
+                          setStateDialog(() => isCreating = true);
+                          try {
+                            final secretCode = await _supabaseService.createHub(
+                                hubNameController.text.trim(),
+                                _nameController.text.trim());
+                            if (mounted) {
+                              Navigator.pop(context); // Close create dialog
+                              await _showHubCreatedDialog(
+                                  hubNameController.text.trim(), secretCode);
+                            }
+                            await _navigateToHome();
+                          } catch (e) {
+                            if (mounted) {
+                              showErrorDialog(context, 'فشل إنشاء الـ Hub: $e');
+                            }
+                          } finally {
+                            if (mounted) {
+                              setStateDialog(() => isCreating = false);
+                            }
+                          }
+                        },
+                  child: isCreating
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('إنشاء'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -115,69 +138,84 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
   }
 
   void _showJoinHubDialog() {
-  final codeController = TextEditingController();
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => AlertDialog(
-      title: const Text('الانضمام إلى Hub'),
-      content: TextField(
-        controller: codeController,
-        decoration: const InputDecoration(labelText: 'الرمز السري للـ Hub'),
-        autofocus: true,
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            if (!context.mounted) return;
-            Navigator.pop(context);
+    final codeController = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        bool isJoining = false;
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('الانضمام إلى Hub'),
+              content: TextField(
+                controller: codeController,
+                decoration:
+                    const InputDecoration(labelText: 'الرمز السري للـ Hub'),
+                autofocus: true,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isJoining ? null : () => Navigator.pop(context),
+                  child: const Text('إلغاء'),
+                ),
+                ElevatedButton(
+                  onPressed: isJoining
+                      ? null
+                      : () async {
+                          final code = codeController.text.trim();
+                          if (code.isEmpty) {
+                            showErrorDialog(context, 'الرجاء إدخال الرمز السري');
+                            return;
+                          }
+
+                          setStateDialog(() => isJoining = true);
+
+                          try {
+                            await _supabaseService.joinHub(
+                                code, _nameController.text.trim());
+
+                            if (mounted) {
+                              Navigator.pop(context); // Close dialog on success
+                            }
+                            await _navigateToHome();
+                          } catch (e) {
+                            var errorMessage = e
+                                .toString()
+                                .replaceFirst('Exception: ', '');
+                            if (errorMessage.contains(
+                                'Hub not found with this secret code')) {
+                              errorMessage =
+                                  'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
+                            } else if (errorMessage.contains(
+                                'You are already a member of this hub')) {
+                              errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
+                            }
+                            if (mounted) {
+                              showErrorDialog(
+                                  context, 'فشل الانضمام: $errorMessage');
+                            }
+                          } finally {
+                            if (mounted) {
+                              setStateDialog(() => isJoining = false);
+                            }
+                          }
+                        },
+                  child: isJoining
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('انضمام'),
+                ),
+              ],
+            );
           },
-          child: const Text('إلغاء'),
-        ),
-        ElevatedButton(
-          onPressed: () async {
-            final code = codeController.text.trim();
-            if (code.isEmpty) {
-              if (!context.mounted) return;
-              showErrorDialog(context, 'الرجاء إدخال الرمز السري');
-              return;
-            }
-
-            // ✅ خلي رسالة التحميل تبان
-            if (!mounted) return;
-            setState(() => _isLoading = true);
-
-            try {
-              print("🔍 Trying to join hub with code: $code");
-              await _supabaseService.joinHub(code, _nameController.text.trim());
-              print("✅ Joined hub successfully!");
-
-              if (!mounted) return;
-              Navigator.pop(context); // Close dialog only if success
-              await _navigateToHome();
-            } catch (e, st) {
-              print("❌ JoinHub error: $e\n$st");
-              var errorMessage = e.toString().replaceFirst('Exception: ', '');
-              if (errorMessage.contains('Hub not found with this secret code')) {
-                errorMessage =
-                    'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
-              } else if (errorMessage
-                  .contains('You are already a member of this hub')) {
-                errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
-              }
-              if (!context.mounted) return;
-              showErrorDialog(context, 'فشل الانضمام: $errorMessage');
-            } finally {
-              if (!mounted) return;
-              setState(() => _isLoading = false);
-            }
-          },
-          child: const Text('انضمام'),
-        ),
-      ],
-    ),
-  );
-}
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
