@@ -1,14 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import '../models/ai_chat_message.dart'; // قم بتعديل 'package_name' لاسم الحزمة الصحيح
-import '../models/project.dart'; // قم بتعديل 'package_name' لاسم الحزمة الصحيح
-import '../models/bug.dart'; // قم بتعديل 'package_name' لاسم الحزمة الصحيح
+import '../models/ai_chat_message.dart';
+import '../models/project.dart';
+import '../models/bug.dart';
 import 'package:http/http.dart' as http;
-import 'dart:math';
 import '../config.dart'; // استيراد قائمة المفاتيح
 
-/// A custom exception to hold HTTP status codes for the retry logic.
+/// استثناء مخصص للاحتفاظ بحالة كود الخطأ HTTP.
 class HttpExceptionWithStatusCode implements Exception {
   final String message;
   final int statusCode;
@@ -19,83 +18,162 @@ class HttpExceptionWithStatusCode implements Exception {
   String toString() => 'HttpException: $message, StatusCode: $statusCode';
 }
 
-/// Retries an operation with exponential backoff.
-Future<T> _retry<T>(Future<T> Function() operation) async {
-  const maxRetries = 3; // تقليل عدد المحاولات لكل مفتاح
-  int attempt = 0;
-  while (attempt < maxRetries) {
-    try {
-      return await operation();
-    } on HttpExceptionWithStatusCode {
-      rethrow; // إعادة رمي أخطاء HTTP مباشرة لمعالجتها في منطق تبديل المفاتيح
-    } on SocketException catch (e) {
-      attempt++;
-      print('Network error (attempt $attempt): $e');
-      if (attempt >= maxRetries) rethrow;
-      await Future.delayed(Duration(seconds: pow(2, attempt).toInt()));
-    } on TimeoutException catch (e) {
-      attempt++;
-      print('Request timeout (attempt $attempt): $e');
-      if (attempt >= maxRetries) rethrow;
-      await Future.delayed(Duration(seconds: pow(2, attempt).toInt()));
-    }
-  }
-  throw Exception('Failed after multiple retries');
+/// استثناء مخصص لتجاوز حد الـ tokens.
+class MaxTokensException implements Exception {
+  final String message = "الطلب أو الرد تجاوز الحد الأقصى للـ tokens.";
+
+  @override
+  String toString() => message;
 }
 
 class GeminiService {
-  // --- إضافة جديدة: متغير لتتبع المفتاح المستخدم حالياً ---
+  // متغير لتتبع المفتاح المستخدم حالياً
   int _currentApiKeyIndex = 0;
 
-  // --- دالة مساعدة لإنشاء عنوان URL ديناميكياً ---
+  // دالة مساعدة لإنشاء عنوان URL ديناميكياً
   String _getApiUrl(String model, String apiKey) {
     return 'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey';
   }
+
+  /// دالة مساعدة لاستخلاص النص بأمان من ردود Gemini.
+  String _parseTextFromResponse(http.Response response) {
+    try {
+      final data = jsonDecode(response.body);
+      final candidates = data?['candidates'];
+
+      if (candidates is List && candidates.isNotEmpty) {
+        final candidate = candidates.first;
+        final parts = candidate?['content']?['parts'];
+        if (parts is List && parts.isNotEmpty) {
+          final text = parts.first?['text'];
+          if (text is String && text.isNotEmpty) {
+            return text; // حالة النجاح
+          }
+        }
+        
+        final finishReason = candidate?['finishReason'];
+        if (finishReason == 'SAFETY') {
+          return "عذراً، لم أتمكن من إكمال الطلب لأنه يخالف سياسات السلامة.";
+        }
+        if (finishReason == 'MAX_TOKENS') {
+          // الآن نرمي استثناءً مخصصاً ليتم معالجته في منطق تبديل المفاتيح
+          throw MaxTokensException();
+        }
+      }
+
+      print("Could not parse valid text from Gemini response: ${response.body}");
+      return "عذراً، لم يتمكن المساعد من إنشاء رد. قد يكون الرد فارغاً أو بتنسيق غير متوقع.";
+    } catch (e) {
+      if (e is MaxTokensException) {
+        rethrow;
+      }
+      print("Error parsing Gemini response body: ${response.body}. Exception: $e");
+      return "عذراً، حدث خطأ أثناء معالجة استجابة المساعد الذكي.";
+    }
+  }
+
+  /// دالة مساعدة لاستخلاص JSON بأمان من ردود Gemini.
+  String _parseJsonFromResponse(http.Response response) {
+      try {
+        final data = jsonDecode(response.body);
+        final candidates = data?['candidates'];
+
+        if (candidates is List && candidates.isNotEmpty) {
+          final candidate = candidates.first;
+          final parts = candidate?['content']?['parts'];
+          if (parts is List && parts.isNotEmpty) {
+            final text = parts.first?['text'];
+            if (text is String && text.isNotEmpty) {
+              if (text.trim().startsWith('[') || text.trim().startsWith('{')) {
+                  return text;
+              }
+            }
+          }
+          
+          final finishReason = candidate?['finishReason'];
+          if (finishReason == 'SAFETY') {
+            return '[]'; 
+          }
+          if (finishReason == 'MAX_TOKENS') {
+            throw MaxTokensException();
+          }
+        }
+        
+        print("Could not parse valid JSON from Gemini response: ${response.body}");
+        return '[]';
+      } catch (e) {
+        if (e is MaxTokensException) {
+          rethrow;
+        }
+        print("Error parsing Gemini JSON response body: ${response.body}. Exception: $e");
+        return '[]';
+      }
+  }
+
   
-  // --- تعديل جوهري: دالة مركزية لتنفيذ الطلبات مع تبديل المفاتيح ---
-  Future<http.Response> _executeRequestWithKeyRotation(
-      String model, Map<String, dynamic> body) async {
+  /// (الحل الجذري) - دالة مركزية جديدة لتنفيذ الطلبات ومعالجتها مع تبديل المفاتيح عند أي خطأ.
+  Future<String> _executeRequestAndParse({
+    required String model,
+    required Map<String, dynamic> body,
+    required String Function(http.Response) parser,
+  }) async {
+    // إعادة تعيين مؤشر المفتاح مع كل عملية جديدة
+    _currentApiKeyIndex = 0; 
+    
     while (_currentApiKeyIndex < geminiApiKeys.length) {
       final apiKey = geminiApiKeys[_currentApiKeyIndex];
       final apiUrl = _getApiUrl(model, apiKey);
-      
-      try {
-        print('Attempting API call with key index: $_currentApiKeyIndex');
-        final response = await _retry(() async {
-          final res = await http.post(
-            Uri.parse(apiUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          ).timeout(const Duration(seconds: 90));
 
-          if (res.statusCode != 200) {
-            final errorBody = jsonDecode(res.body);
-            final errorMessage = errorBody['error']?['message'] ?? res.body;
-            throw HttpExceptionWithStatusCode(errorMessage, res.statusCode);
+      try {
+        print('محاولة الاتصال بالـ API باستخدام المفتاح رقم: $_currentApiKeyIndex');
+        
+        // 1. تنفيذ طلب HTTP
+        final response = await http.post(
+          Uri.parse(apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        ).timeout(const Duration(seconds: 90));
+
+        // 2. التحقق من أكواد حالة HTTP
+        if (response.statusCode != 200) {
+          // *** التعديل هنا ***
+          // الآن سيتم تبديل المفتاح أيضاً عند خطأ 503 (ضغط على الخادم)
+          if (response.statusCode == 429 || response.statusCode == 503) { 
+            print('المفتاح رقم $_currentApiKeyIndex فشل (السبب: ${response.statusCode}). سيتم التبديل للمفتاح التالي.');
+            // ستستمر الحلقة للمفتاح التالي
+          } else {
+            // لأخطاء HTTP الحرجة الأخرى، أوقف التنفيذ فوراً
+            final errorBody = jsonDecode(response.body);
+            final errorMessage = errorBody['error']?['message'] ?? response.body;
+            throw HttpExceptionWithStatusCode(errorMessage, response.statusCode);
           }
-          return res;
-        });
-        // إذا نجح الطلب، أرجع الاستجابة فوراً
-        return response;
-      } on HttpExceptionWithStatusCode catch (e) {
-        // إذا كان الخطأ بسبب الحصة، انتقل للمفتاح التالي
-        if (e.statusCode == 429) {
-          print('API key at index $_currentApiKeyIndex failed (rate limit). Switching to next key.');
-          _currentApiKeyIndex++;
-          // استمر في الحلقة لتجربة المفتاح التالي
         } else {
-          // لأخطاء HTTP الأخرى، أوقف التنفيذ وأظهر الخطأ
-          rethrow;
+          // 3. إذا كان الاتصال ناجحاً، قم بمعالجة الرد
+          // هذه الدالة قد ترمي MaxTokensException
+          final parsedResult = parser(response);
+          return parsedResult; // نجاح!
         }
+      
+      } on MaxTokensException {
+        print('الطلب تجاوز الحد الأقصى للـ tokens مع المفتاح $_currentApiKeyIndex. سيتم التبديل للمفتاح التالي.');
+        // ستستمر الحلقة للمفتاح التالي
+      } on SocketException catch (e) {
+        print('فشل الاتصال بالشبكة (SocketException) مع المفتاح $_currentApiKeyIndex: $e. سيتم التبديل للمفتاح التالي.');
+        // ستستمر الحلقة للمفتاح التالي
+      } on TimeoutException catch (e) {
+        print('انتهت مهلة الطلب (Timeout) مع المفتاح $_currentApiKeyIndex: $e. سيتم التبديل للمفتاح التالي.');
+        // ستستمر الحلقة للمفتاح التالي
       }
-      // أي أخطاء أخرى (شبكة، تايم أوت) سيتم رميها من _retry
+      
+      // إذا وصلنا هنا، فهذا يعني أن المفتاح الحالي فشل. انتقل إلى التالي
+      _currentApiKeyIndex++;
+      await Future.delayed(const Duration(seconds: 1)); // تأخير بسيط قبل المحاولة التالية
     }
 
     // إذا انتهت الحلقة، فهذا يعني أن جميع المفاتيح قد فشلت
-    print('All API keys have been exhausted.');
-    throw HttpExceptionWithStatusCode(
-      "All API keys have reached their rate limit.", 
-      429
+    print('فشلت جميع مفاتيح الـ API.');
+    throw Exception(
+      "فشل الاتصال بالمساعد الذكي. قد تكون هناك مشكلة في الشبكة أو أن الخدمة مضغوطة حالياً. يرجى المحاولة مرة أخرى."
     );
   }
 
@@ -106,7 +184,6 @@ class GeminiService {
     required List<AiChatMessage> history,
     String? codeContext,
   }) async {
-    // ... (نفس كود بناء systemContext)
     String systemContext = '''
 أنت "مساعد DevNest"، خبير برمجي متخصص في Flutter. مهمتك هي تحليل المشاكل وتقديم اقتراحات وحلول نصية فقط.
 تحدث باللغة العربية بأسلوب احترافي ومباشر.
@@ -129,17 +206,11 @@ class GeminiService {
         systemContext += '\nلا توجد أخطاء مسجلة حالياً.\n';
       }
     }
-    if (codeContext != null && codeContext.isNotEmpty) {
-      systemContext += '\n--- كود المشروع الكامل للتحليل ---\n';
-      systemContext += codeContext;
-      systemContext += '\n--- نهاية كود المشروع ---\n';
-    }
     
     final List<Map<String, dynamic>> contents = history.map((msg) => {
         'role': msg.role,
         'parts': [{'text': msg.content}]
     }).toList();
-    contents.add({'role': 'user', 'parts': [{'text': userMessage}]});
 
     final body = {
       'contents': contents,
@@ -148,20 +219,16 @@ class GeminiService {
     };
 
     try {
-      final response = await _executeRequestWithKeyRotation('gemini-2.5-flash', body);
-      final data = jsonDecode(response.body);
-      if (data['candidates'] != null && data['candidates'].isNotEmpty) {
-        return data['candidates'][0]['content']['parts'][0]['text'];
-      }
-      return "عذراً، لم يتمكن المساعد من إنشاء رد. قد تكون المشكلة متعلقة بسياسات السلامة.";
-    } on HttpExceptionWithStatusCode catch (e) {
-      if (e.statusCode == 429) {
-        throw Exception("الذكاء الاصطناعي أُرهق قليلاً. يرجى الانتظار والمحاولة مرة أخرى بعد فترة.");
-      }
-      throw Exception("عذراً، حدث خطأ أثناء التواصل مع المساعد الذكي.\n${e.message}");
+      // استخدام الدالة المركزية الجديدة
+      return await _executeRequestAndParse(
+        model: 'gemini-1.5-flash', // استخدام موديل أسرع للمحادثة
+        body: body,
+        parser: _parseTextFromResponse,
+      );
     } catch (e) {
-      print('Gemini Service Exception: $e');
-      throw Exception("عذراً، فشل الاتصال بخدمة الذكاء الاصطناعي: $e");
+      print('Gemini Service Exception (generalChat): $e');
+      // الاستثناء القادم من الدالة المركزية جاهز للعرض للمستخدم
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
 
@@ -170,7 +237,6 @@ class GeminiService {
     required Project project,
     required String codeContext,
   }) async {
-    // ... (نفس كود بناء systemPrompt و userPrompt)
     const systemPrompt = '''
 أنت "مساعد DevNest"، مبرمج خبير ومساعد ذكاء اصطناعي متخصص في Flutter و Dart.
 مهمتك هي تحليل مشكلة برمجية محددة ضمن سياق مشروع كامل وتقديم حل متكامل.
@@ -205,20 +271,15 @@ $codeContext
     };
     
     try {
-      final response = await _executeRequestWithKeyRotation('gemini-2.5-pro', body);
-      final data = jsonDecode(response.body);
-      if (data['candidates'] != null && data['candidates'].isNotEmpty) {
-        return data['candidates'][0]['content']['parts'][0]['text'];
-      }
-      throw Exception("عذراً، لم يتمكن المساعد من إنشاء رد.");
-    } on HttpExceptionWithStatusCode catch (e) {
-      if (e.statusCode == 429) {
-        throw Exception("الذكاء الاصطناعي أُرهق قليلاً. يرجى الانتظار والمحاولة مرة أخرى بعد فترة.");
-      }
-      throw Exception("فشل الحصول على اقتراح بعد عدة محاولات: ${e.message}");
+      // استخدام الدالة المركزية الجديدة
+      return await _executeRequestAndParse(
+        model: 'gemini-1.5-pro', // استخدام موديل قوي لتحليل الكود
+        body: body,
+        parser: _parseTextFromResponse,
+      );
     } catch (e) {
       print('Gemini Service Exception (analyzeBug): $e');
-      throw Exception("فشل الاتصال بالخدمة لتحليل الخطأ: $e");
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
   
@@ -227,8 +288,7 @@ $codeContext
     required String auditType,
     required List<Bug> existingBugs,
   }) async {
-    // ... (نفس كود بناء auditDescription, allowedTypes, systemPrompt, userPrompt)
-        final auditDescription = auditType == 'bugs'
+    final auditDescription = auditType == 'bugs'
         ? 'ابحث عن الأخطاء المحتملة والمشاكل المنطقية فقط. يجب أن تكون أنواع النتائج "حرج" أو "بسيط" حصراً.'
         : 'اقترح تحسينات على الكود، إعادة هيكلة، أو ميزات جديدة. يجب أن يكون نوع كل النتائج "تحسين" حصراً.';
     final allowedTypes = auditType == 'bugs'
@@ -275,20 +335,15 @@ $existingBugsString
     };
     
     try {
-      final response = await _executeRequestWithKeyRotation('gemini-2.5-pro', body);
-      final data = jsonDecode(response.body);
-      if (data['candidates'] != null && data['candidates'].isNotEmpty) {
-        return data['candidates'][0]['content']['parts'][0]['text'];
-      }
-      throw Exception("لم يتمكن المساعد من إنشاء رد JSON.");
-    } on HttpExceptionWithStatusCode catch (e) {
-      if (e.statusCode == 429) {
-        throw Exception("الذكاء الاصطناعي أُرهق قليلاً. يرجى الانتظار والمحاولة مرة أخرى بعد فترة.");
-      }
-      throw Exception("فشل الفحص الذكي بعد عدة محاولات: ${e.message}");
+      // استخدام الدالة المركزية الجديدة
+      return await _executeRequestAndParse(
+        model: 'gemini-1.5-pro',
+        body: body,
+        parser: _parseJsonFromResponse,
+      );
     } catch (e) {
       print('Gemini Service Exception (performAudit): $e');
-      throw Exception("فشل الاتصال بالخدمة لإجراء الفحص: $e");
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
 }
