@@ -83,7 +83,6 @@ class BugTrackerViewState extends State<BugTrackerView> {
       return;
     }
 
-    // ✅ طلب إذن تثبيت التطبيقات فقط (التخزين ما عاد ضروري)
     final status = await Permission.requestInstallPackages.request();
 
     if (status.isPermanentlyDenied) {
@@ -124,6 +123,7 @@ class BugTrackerViewState extends State<BugTrackerView> {
     final downloadNotifier = ValueNotifier<double?>(null);
     final statusNotifier = ValueNotifier<String>('جاري جلب معلومات الإصدار...');
     final releaseInfoNotifier = ValueNotifier<Map<String, String>>({});
+    final cancelToken = CancelToken(); // 1. إنشاء CancelToken
 
     // 📥 نافذة التقدم
     showDialog(
@@ -173,13 +173,18 @@ class BugTrackerViewState extends State<BugTrackerView> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () {
+              // 3. استدعاء الإلغاء وإغلاق النافذة
+              cancelToken.cancel('Download cancelled by user.');
+              Navigator.of(context).pop();
+            },
             child: const Text('إلغاء'),
           ),
         ],
       ),
     );
 
+    String? savePath;
     try {
       final info = await _githubService
           .getLatestReleaseAssetInfo(widget.project.githubUrl!);
@@ -190,9 +195,8 @@ class BugTrackerViewState extends State<BugTrackerView> {
       statusNotifier.value = 'جاري تنزيل: $fileName';
       downloadNotifier.value = 0.0;
 
-      // ✅ حفظ في مساحة خاصة بالتطبيق (لا تحتاج إذن تخزين)
       final dir = await getApplicationDocumentsDirectory();
-      final savePath = '${dir.path}/$fileName';
+      savePath = '${dir.path}/$fileName';
 
       await Dio().download(
         downloadUrl,
@@ -202,10 +206,32 @@ class BugTrackerViewState extends State<BugTrackerView> {
             downloadNotifier.value = received / total;
           }
         },
+        cancelToken: cancelToken, // 2. تمرير الـ CancelToken
       );
 
       if (mounted) Navigator.of(context).pop();
-      await OpenFilex.open(savePath);
+      if (savePath != null) {
+        await OpenFilex.open(savePath);
+      }
+    } on DioException catch (e) {
+      // 4. معالجة استثناء الإلغاء
+      if (e.type == DioExceptionType.cancel) {
+        debugPrint("Download cancelled by user.");
+        // حذف الملف غير المكتمل إذا تم إلغاء التحميل
+        if (savePath != null) {
+          final partialFile = File(savePath);
+          if (await partialFile.exists()) {
+            await partialFile.delete();
+            debugPrint("Partial file deleted at: $savePath");
+          }
+        }
+      } else {
+        // معالجة أخطاء dio الأخرى
+        if (mounted) {
+          Navigator.of(context).pop();
+          showErrorDialog(context, 'فشل تحميل التطبيق: ${e.message}');
+        }
+      }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
