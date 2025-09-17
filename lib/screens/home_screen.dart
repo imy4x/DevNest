@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+// import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/project.dart';
 import '../models/hub.dart';
 import '../models/hub_member.dart';
@@ -30,19 +30,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Hub? _currentHub;
   HubMember? _myMembership;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  final GlobalKey<ProjectSidebarState> _sidebarKey = GlobalKey<ProjectSidebarState>();
-  final GlobalKey<BugTrackerViewState> _bugTrackerKey = GlobalKey<BugTrackerViewState>();
-
+  final GlobalKey<ProjectSidebarState> _sidebarKey =
+      GlobalKey<ProjectSidebarState>();
+  final GlobalKey<BugTrackerViewState> _bugTrackerKey =
+      GlobalKey<BugTrackerViewState>();
 
   HubLoadState _hubLoadState = HubLoadState.loading;
 
   StreamSubscription? _hubMembersSubscription;
   StreamSubscription? _hubSubscription;
-  Timer? _kickCheckTimer;
-  
+
   // ✅ --- (متغير جديد: لمنع مشكلة الـ Race Condition عند المغادرة) ---
   bool _isLeaving = false;
-
 
   bool get _isLeader => _myMembership?.role == 'leader';
 
@@ -56,7 +55,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _hubMembersSubscription?.cancel();
     _hubSubscription?.cancel();
-    _kickCheckTimer?.cancel();
     super.dispose();
   }
 
@@ -116,7 +114,8 @@ class _HomeScreenState extends State<HomeScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('خطأ في الاتصال'),
-        content: const Text('تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.'),
+        content: const Text(
+            'تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.'),
         actions: [
           TextButton(
             onPressed: () {
@@ -152,7 +151,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _hubMembersSubscription?.cancel();
     _hubSubscription?.cancel();
-    _kickCheckTimer?.cancel();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('hub_setup_complete', false);
@@ -183,25 +181,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _checkIfKicked() async {
-    if (_currentHub == null || !mounted || _isLeaving) return;
-    try {
-      final member = await _supabaseService.getMemberInfo(_currentHub!.id);
-      if (member == null && mounted) {
-        _handleMemberKicked();
-      }
-    } catch (e) {
-      if (e is! ClientException) {
-        debugPrint("Error during periodic kick check: $e");
-      }
-    }
-  }
-
   // ✅ --- (تعديل: إضافة تحقق من متغير المغادرة) ---
   void _setupRealtimeListeners(String hubId) {
     _hubMembersSubscription?.cancel();
     _hubSubscription?.cancel();
-    _kickCheckTimer?.cancel();
 
     _hubMembersSubscription =
         _supabaseService.getHubMembersStream(hubId).listen((membersList) {
@@ -234,10 +217,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     });
-
-    _kickCheckTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      _checkIfKicked();
-    });
   }
 
   void _onProjectSelected(Project? project) {
@@ -265,7 +244,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-  
+
   void _refreshAll() {
     _sidebarKey.currentState?.refreshProjects();
     _bugTrackerKey.currentState?.refreshBugs();
@@ -302,12 +281,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
       try {
         await _supabaseService.leaveHub(_myMembership!.id);
-        
+
         // الانتقال بعد المغادرة الناجحة
         if (mounted) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setBool('hub_setup_complete', false);
-          
+
           Navigator.of(context).pushAndRemoveUntil(
             MaterialPageRoute(builder: (context) => const InitialHubScreen()),
             (route) => false,
@@ -349,7 +328,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 if (!_isLeader)
                   TextButton.icon(
                     icon: const Icon(Icons.exit_to_app, color: Colors.orange),
-                    label: const Text('مغادرة الفريق', style: TextStyle(color: Colors.orange)),
+                    label: const Text('مغادرة الفريق',
+                        style: TextStyle(color: Colors.orange)),
                     onPressed: () {
                       Navigator.pop(context); // Close the info dialog first
                       _leaveHub();
@@ -399,7 +379,7 @@ class _HomeScreenState extends State<HomeScreen> {
         title: Text(_selectedProject?.name ?? _currentHub?.name ?? 'DevNest'),
         actions: [
           if (_selectedProject != null)
-             IconButton(
+            IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: _refreshAll,
               tooltip: 'تحديث الكل',
