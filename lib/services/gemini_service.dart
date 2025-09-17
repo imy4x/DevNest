@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import '../models/ai_chat_message.dart';
 import '../models/project.dart';
 import '../models/bug.dart';
@@ -27,8 +28,9 @@ class MaxTokensException implements Exception {
 }
 
 class GeminiService {
-  // متغير لتتبع المفتاح المستخدم حالياً
+  // متغير لتتبع المفتاح المستخدم حالياً. سيبقى محافظاً على قيمته بين الطلبات
   int _currentApiKeyIndex = 0;
+  final _random = Random();
 
   // دالة مساعدة لإنشاء عنوان URL ديناميكياً
   String _getApiUrl(String model, String apiKey) {
@@ -109,73 +111,86 @@ class GeminiService {
         return '[]';
       }
   }
-
   
-  /// (الحل الجذري) - دالة مركزية جديدة لتنفيذ الطلبات ومعالجتها مع تبديل المفاتيح عند أي خطأ.
+  /// (الحل الجذري والمُحسَّن) - دالة مركزية جديدة مع دوران آمن للمفاتيح وتباطؤ تدريجي.
   Future<String> _executeRequestAndParse({
     required String model,
     required Map<String, dynamic> body,
     required String Function(http.Response) parser,
   }) async {
-    // إعادة تعيين مؤشر المفتاح مع كل عملية جديدة
-    _currentApiKeyIndex = 0; 
-    
-    while (_currentApiKeyIndex < geminiApiKeys.length) {
-      final apiKey = geminiApiKeys[_currentApiKeyIndex];
+    // للصلابة، تحقق مما إذا كانت قائمة المفاتيح فارغة.
+    if (geminiApiKeys.isEmpty) {
+      print('API keys list is empty.');
+      throw Exception("فشل الاتصال: لا توجد مفاتيح API متاحة.");
+    }
+
+    final maxAttempts = geminiApiKeys.length;
+    // سنحاول استخدام كل مفتاح مرة واحدة، بدءاً من آخر مؤشر تم استخدامه.
+    for (int i = 0; i < maxAttempts; i++) {
+      // **التحسين 1: دوران ذكي وآمن للمفاتيح**
+      // يتم حساب المؤشر محلياً لكل محاولة، مما يجعله آمناً من التعديلات المتزامنة.
+      int attemptIndex = (_currentApiKeyIndex + i) % maxAttempts;
+      final apiKey = geminiApiKeys[attemptIndex];
       final apiUrl = _getApiUrl(model, apiKey);
 
       try {
-        print('محاولة الاتصال بالـ API باستخدام المفتاح رقم: $_currentApiKeyIndex');
+        print('Attempt ${i + 1}/$maxAttempts: Using API Key index $attemptIndex');
         
-        // 1. تنفيذ طلب HTTP
         final response = await http.post(
           Uri.parse(apiUrl),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(body),
         ).timeout(const Duration(seconds: 90));
 
-        // 2. التحقق من أكواد حالة HTTP
-        if (response.statusCode != 200) {
-          // *** التعديل هنا ***
-          // الآن سيتم تبديل المفتاح أيضاً عند خطأ 503 (ضغط على الخادم)
-          if (response.statusCode == 429 || response.statusCode == 503) { 
-            print('المفتاح رقم $_currentApiKeyIndex فشل (السبب: ${response.statusCode}). سيتم التبديل للمفتاح التالي.');
-            // ستستمر الحلقة للمفتاح التالي
-          } else {
-            // لأخطاء HTTP الحرجة الأخرى، أوقف التنفيذ فوراً
-            final errorBody = jsonDecode(response.body);
-            final errorMessage = errorBody['error']?['message'] ?? response.body;
-            throw HttpExceptionWithStatusCode(errorMessage, response.statusCode);
-          }
-        } else {
-          // 3. إذا كان الاتصال ناجحاً، قم بمعالجة الرد
-          // هذه الدالة قد ترمي MaxTokensException
+        if (response.statusCode == 200) {
           final parsedResult = parser(response);
-          return parsedResult; // نجاح!
+          // **التحسين: تحديث المؤشر عند النجاح**
+          // تذكر آخر مؤشر مفتاح ناجح للعملية التالية.
+          _currentApiKeyIndex = attemptIndex;
+          return parsedResult;
         }
-      
-      } on MaxTokensException {
-        print('الطلب تجاوز الحد الأقصى للـ tokens مع المفتاح $_currentApiKeyIndex. سيتم التبديل للمفتاح التالي.');
-        // ستستمر الحلقة للمفتاح التالي
-      } on SocketException catch (e) {
-        print('فشل الاتصال بالشبكة (SocketException) مع المفتاح $_currentApiKeyIndex: $e. سيتم التبديل للمفتاح التالي.');
-        // ستستمر الحلقة للمفتاح التالي
-      } on TimeoutException catch (e) {
-        print('انتهت مهلة الطلب (Timeout) مع المفتاح $_currentApiKeyIndex: $e. سيتم التبديل للمفتاح التالي.');
-        // ستستمر الحلقة للمفتاح التالي
+
+        if ([429, 500, 503].contains(response.statusCode)) {
+          print('Key index $attemptIndex failed with status ${response.statusCode}. Switching to the next key.');
+          throw HttpExceptionWithStatusCode('Server is busy or rate-limited', response.statusCode);
+        } else {
+          final errorBody = jsonDecode(response.body);
+          final errorMessage = errorBody['error']?['message'] ?? response.body;
+          throw HttpExceptionWithStatusCode(errorMessage, response.statusCode);
+        }
+
+      } catch (e) {
+        if (e is SocketException || e is TimeoutException || e is MaxTokensException || e is HttpExceptionWithStatusCode) {
+          print('Encountered a retriable error with key index $attemptIndex: ${e.runtimeType}.');
+          
+          // **تحسين منطق الانتظار (Backoff)**
+          if (i < maxAttempts - 1) {
+            // يبدأ الانتظار من ثانيتين ويزداد بشكل كبير
+            final backoffSeconds = pow(2, i + 1).toInt(); 
+            final jitterMilliseconds = _random.nextInt(1000);
+            final waitDuration = Duration(seconds: backoffSeconds, milliseconds: jitterMilliseconds);
+            
+            print('Waiting for ${waitDuration.inSeconds} seconds before next attempt...');
+            await Future.delayed(waitDuration);
+          }
+          // ستستمر الحلقة تلقائياً إلى المفتاح التالي.
+        } else {
+          print('Encountered a non-retriable error: $e');
+          rethrow; // للأخطاء الحرجة، توقف فوراً.
+        }
       }
-      
-      // إذا وصلنا هنا، فهذا يعني أن المفتاح الحالي فشل. انتقل إلى التالي
-      _currentApiKeyIndex++;
-      await Future.delayed(const Duration(seconds: 1)); // تأخير بسيط قبل المحاولة التالية
     }
 
-    // إذا انتهت الحلقة، فهذا يعني أن جميع المفاتيح قد فشلت
-    print('فشلت جميع مفاتيح الـ API.');
+    // إذا انتهت الحلقة، فهذا يعني أن جميع المفاتيح قد فشلت.
+    // **التحسين: قم بتدوير المفتاح حتى لو فشلت جميع المحاولات**
+    // هذا يضمن أن العملية المستقلة التالية لا تبدأ بنفس المفتاح الفاشل.
+    _currentApiKeyIndex = (_currentApiKeyIndex + 1) % maxAttempts;
+    print('All API keys and retry attempts have failed.');
     throw Exception(
-      "فشل الاتصال بالمساعد الذكي. قد تكون هناك مشكلة في الشبكة أو أن الخدمة مضغوطة حالياً. يرجى المحاولة مرة أخرى."
+      "فشل الاتصال بالمساعد الذكي بعد عدة محاولات. قد تكون هناك مشكلة في الشبكة أو أن الخدمة مضغوطة حالياً. يرجى المحاولة مرة أخرى."
     );
   }
+
 
   Future<String> generalChat({
     required String userMessage,
@@ -219,15 +234,13 @@ class GeminiService {
     };
 
     try {
-      // استخدام الدالة المركزية الجديدة
       return await _executeRequestAndParse(
-        model: 'gemini-1.5-flash', // استخدام موديل أسرع للمحادثة
+        model: 'gemini-2.5-pro',
         body: body,
         parser: _parseTextFromResponse,
       );
     } catch (e) {
       print('Gemini Service Exception (generalChat): $e');
-      // الاستثناء القادم من الدالة المركزية جاهز للعرض للمستخدم
       throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
@@ -271,9 +284,8 @@ $codeContext
     };
     
     try {
-      // استخدام الدالة المركزية الجديدة
       return await _executeRequestAndParse(
-        model: 'gemini-1.5-pro', // استخدام موديل قوي لتحليل الكود
+        model: 'gemini-2.5-pro',
         body: body,
         parser: _parseTextFromResponse,
       );
@@ -335,9 +347,8 @@ $existingBugsString
     };
     
     try {
-      // استخدام الدالة المركزية الجديدة
       return await _executeRequestAndParse(
-        model: 'gemini-1.5-pro',
+        model: 'gemini-2.5-pro',
         body: body,
         parser: _parseJsonFromResponse,
       );
