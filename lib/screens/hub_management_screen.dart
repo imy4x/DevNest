@@ -5,6 +5,8 @@ import '../models/hub_member.dart';
 import '../services/supabase_service.dart';
 import '../widgets/app_dialogs.dart';
 import 'initial_hub_screen.dart';
+import '../services/notification_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class HubManagementScreen extends StatefulWidget {
   final Hub hub;
@@ -19,10 +21,21 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   late Future<List<HubMember>> _membersFuture;
   bool _isDeletingHub = false;
 
+  // --- NEW: For broadcast message ---
+  final _broadcastController = TextEditingController();
+  final _broadcastFormKey = GlobalKey<FormState>();
+  bool _isSendingBroadcast = false;
+
   @override
   void initState() {
     super.initState();
     _refreshMembers();
+  }
+
+  @override
+  void dispose() {
+    _broadcastController.dispose();
+    super.dispose();
   }
 
   void _refreshMembers() {
@@ -30,8 +43,45 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       _membersFuture = _supabaseService.getHubMembers(widget.hub.id);
     });
   }
-  
-  Future<void> _updatePermissions(HubMember member, {bool? canAdd, bool? canEdit, bool? canChat, bool? canAddProj}) async {
+
+  Future<void> _sendTestNotification() async {
+    try {
+      final notificationService = NotificationService();
+      await notificationService.init(); // تأكد من تهيئة الـ NotificationService
+
+      const title = 'إشعار اختبار';
+      const body = 'هذا إشعار foreground للتجربة';
+
+      // استخدم الـ local notifications مباشرة
+      notificationService.localNotificationsPlugin.show(
+        0,
+        title,
+        body,
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            'high_importance_channel',
+            'High Importance Notifications',
+            channelDescription:
+                'This channel is used for important notifications.',
+            importance: Importance.max,
+            priority: Priority.high,
+            icon: '@mipmap/ic_launcher',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        showErrorDialog(context, 'فشل إرسال إشعار الاختبار: $e');
+      }
+    }
+  }
+
+  Future<void> _updatePermissions(HubMember member,
+      {bool? canAdd,
+      bool? canEdit,
+      bool? canChat,
+      bool? canAddProj,
+      bool? canAudit}) async {
     try {
       await _supabaseService.updateMemberPermissions(
         memberId: member.id,
@@ -39,13 +89,14 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
         canEditBugs: canEdit ?? member.canEditBugs,
         canUseChat: canChat ?? member.canUseChat,
         canManageProjects: canAddProj ?? member.canManageProjects,
+        canUseAiAudit: canAudit ?? member.canUseAiAudit,
       );
-      if(mounted) {
+      if (mounted) {
         showSuccessDialog(context, 'تم تحديث الصلاحيات بنجاح.');
       }
-       _refreshMembers();
-    } catch(e) {
-      if(mounted) {
+      _refreshMembers();
+    } catch (e) {
+      if (mounted) {
         showErrorDialog(context, 'فشل تحديث الصلاحيات: $e');
       }
     }
@@ -55,6 +106,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     final nameController = TextEditingController(text: member.displayName);
     final newName = await showDialog<String>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('تعديل اسم العضو'),
         content: TextField(
@@ -63,7 +115,9 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
           decoration: const InputDecoration(hintText: 'أدخل الاسم الجديد'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إلغاء')),
           FilledButton(
             onPressed: () => Navigator.pop(context, nameController.text.trim()),
             child: const Text('حفظ'),
@@ -74,7 +128,8 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
 
     if (newName != null && newName.isNotEmpty) {
       try {
-        await _supabaseService.updateMemberDisplayName(memberId: member.id, newName: newName);
+        await _supabaseService.updateMemberDisplayName(
+            memberId: member.id, newName: newName);
         _refreshMembers();
       } catch (e) {
         if (mounted) {
@@ -84,33 +139,35 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     }
   }
 
-
   Future<void> _removeMember(HubMember member) async {
     final confirm = await showDialog<bool>(
-      context: context, 
-      builder: (context) => AlertDialog(
-        title: const Text('تأكيد الطرد'),
-        content: Text('هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('طرد وتغيير الرمز', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      )
-    );
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+              title: const Text('تأكيد الطرد'),
+              content: Text(
+                  'هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('إلغاء')),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('طرد وتغيير الرمز',
+                      style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ));
 
     if (confirm == true) {
       try {
         await _supabaseService.removeMember(member.id);
         if (mounted) {
-           // ✨ --- تعديل: تم تحديث رسالة النجاح لتعكس تغيير الرمز --- ✨
-           showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
+          showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
         }
         _refreshMembers();
       } catch (e) {
-        if(mounted) {
+        if (mounted) {
           showErrorDialog(context, 'فشل طرد العضو: $e');
         }
       }
@@ -120,19 +177,22 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   Future<void> _deleteHub() async {
     final members = await _supabaseService.getHubMembers(widget.hub.id);
     if (members.length > 1) {
-      showErrorDialog(context, 'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
+      showErrorDialog(context,
+          'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
       return;
     }
 
     final hubNameController = TextEditingController();
     final confirm = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text('حذف Hub "${widget.hub.name}"'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('هذا الإجراء نهائي ولا يمكن التراجع عنه. سيتم حذف جميع المشاريع والأخطاء والبيانات المرتبطة بهذا الـ Hub.'),
+            const Text(
+                'هذا الإجراء نهائي ولا يمكن التراجع عنه. سيتم حذف جميع المشاريع والأخطاء والبيانات المرتبطة بهذا الـ Hub.'),
             const SizedBox(height: 16),
             Text('للتأكيد، الرجاء كتابة اسم الـ Hub: "${widget.hub.name}"'),
             const SizedBox(height: 8),
@@ -145,15 +205,18 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء')),
           ValueListenableBuilder<TextEditingValue>(
             valueListenable: hubNameController,
             builder: (context, value, child) {
               return FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+                style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade700),
                 onPressed: value.text == widget.hub.name
-                  ? () => Navigator.pop(context, true)
-                  : null,
+                    ? () => Navigator.pop(context, true)
+                    : null,
                 child: const Text('حذف نهائي'),
               );
             },
@@ -169,17 +232,15 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('hub_setup_complete', false);
-        
+
         if (mounted) {
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (context) => const InitialHubScreen()),
-            (route) => false
-          );
+              MaterialPageRoute(builder: (context) => const InitialHubScreen()),
+              (route) => false);
         }
-
       } catch (e) {
         if (mounted) {
-           showErrorDialog(context, 'فشل حذف الـ Hub: ${e.toString()}');
+          showErrorDialog(context, 'فشل حذف الـ Hub: ${e.toString()}');
         }
       } finally {
         if (mounted) {
@@ -189,153 +250,312 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     }
   }
 
+  // --- NEW: Function to send broadcast message ---
+  Future<void> _sendBroadcast() async {
+    if (_broadcastFormKey.currentState?.validate() ?? false) {
+      setState(() => _isSendingBroadcast = true);
+      try {
+        await _supabaseService
+            .sendBroadcastNotification(_broadcastController.text.trim());
+        if (mounted) {
+          _broadcastController.clear();
+          showSuccessDialog(context, 'تم إرسال الإشعار لجميع الأعضاء بنجاح.');
+        }
+      } catch (e) {
+        if (mounted) {
+          showErrorDialog(context, 'فشل إرسال الإشعار: $e');
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isSendingBroadcast = false);
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('إدارة أعضاء "${widget.hub.name}"'),
+        title: Text('إدارة Hub "${widget.hub.name}"'),
       ),
-      body: _isDeletingHub 
-      ? const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [CircularProgressIndicator(), SizedBox(height: 16), Text('جاري حذف الـ Hub...')],))
-      : FutureBuilder<List<HubMember>>(
-        future: _membersFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(child: Text('خطأ: ${snapshot.error}'));
-          }
-          if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return const Center(child: Text('لا يوجد أعضاء في هذا الـ Hub.'));
-          }
+      body: _isDeletingHub
+          ? const Center(
+              child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('جاري حذف الـ Hub...')
+              ],
+            ))
+          : FutureBuilder<List<HubMember>>(
+              future: _membersFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('خطأ: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return const Center(
+                      child: Text('لا يوجد أعضاء في هذا الـ Hub.'));
+                }
 
-          final members = snapshot.data!;
-          final currentUser = _supabaseService.currentUserId;
+                final members = snapshot.data!;
+                final currentUser = _supabaseService.currentUserId;
 
-          return Column(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  itemCount: members.length,
-                  itemBuilder: (context, index) {
-                    final member = members[index];
-                    final isLeader = member.role == 'leader';
-                    final isCurrentUser = member.userId == currentUser;
-                    
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                             Row(
-                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                               children: [
-                                 Expanded(
-                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              member.displayName ?? 'عضو غير مسمى',
-                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                              overflow: TextOverflow.ellipsis,
+                return ListView(
+                  // Changed to ListView to accommodate new sections
+                  children: [
+                    _buildBroadcastCard(), // NEW card for leader
+                    ...members.map((member) {
+                      // The existing list of members
+                      final isLeader = member.role == 'leader';
+                      final isCurrentUser = member.userId == currentUser;
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                member.displayName ??
+                                                    'عضو غير مسمى',
+                                                style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 16),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
                                             ),
+                                            if (!isLeader)
+                                              IconButton(
+                                                icon: const Icon(
+                                                    Icons.edit_outlined,
+                                                    size: 18),
+                                                onPressed: () =>
+                                                    _editDisplayName(member),
+                                                tooltip: 'تعديل الاسم',
+                                              )
+                                          ],
+                                        ),
+                                        if (isLeader)
+                                          const Chip(
+                                            label: Text('قائد'),
+                                            backgroundColor: Colors.blueGrey,
+                                            padding: EdgeInsets.zero,
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                          )
+                                        else if (isCurrentUser)
+                                          const Chip(
+                                            label: Text('أنت'),
+                                            backgroundColor: Colors.purple,
+                                            padding: EdgeInsets.zero,
+                                            visualDensity:
+                                                VisualDensity.compact,
                                           ),
-                                          if (!isLeader)
-                                            IconButton(
-                                              icon: const Icon(Icons.edit_outlined, size: 18),
-                                              onPressed: () => _editDisplayName(member),
-                                              tooltip: 'تعديل الاسم',
-                                            )
-                                        ],
-                                      ),
-                                      if (isLeader)
-                                        const Chip(label: Text('قائد'), backgroundColor: Colors.blueGrey, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact,)
-                                      else if (isCurrentUser)
-                                        const Chip(label: Text('أنت'), backgroundColor: Colors.purple, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact,),
-                                    ],
-                                   ),
-                                 ),
-                                 if(!isLeader)
-                                   IconButton(
-                                     icon: const Icon(Icons.person_remove_outlined),
-                                     color: Colors.orange.shade300,
-                                     tooltip: 'طرد العضو',
-                                     onPressed: () => _removeMember(member),
-                                   )
-                               ],
-                             ),
-                            const Divider(),
-                             SwitchListTile(
-                              title: const Text('إدارة المشاريع (إضافة/تعديل)'),
-                              value: member.canManageProjects,
-                               onChanged: isLeader ? null : (value) {
-                                 _updatePermissions(member, canAddProj: value);
-                              },
-                            ),
-                            SwitchListTile(
-                              title: const Text('السماح بإضافة أخطاء'),
-                              value: member.canAddBugs,
-                              onChanged: isLeader ? null : (value) {
-                                 _updatePermissions(member, canAdd: value);
-                              },
-                            ),
-                             SwitchListTile(
-                              title: const Text('السماح بتعديل الأخطاء'),
-                              value: member.canEditBugs,
-                               onChanged: isLeader ? null : (value) {
-                                 _updatePermissions(member, canEdit: value);
-                              },
-                            ),
-                            SwitchListTile(
-                              title: const Text('السماح باستخدام المحادثة'),
-                              value: member.canUseChat,
-                               onChanged: isLeader ? null : (value) {
-                                 _updatePermissions(member, canChat: value);
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Card(
-                  color: Colors.red.shade900.withOpacity(0.5),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                         Text('منطقة الخطر', style: Theme.of(context).textTheme.titleLarge),
-                         const SizedBox(height: 8),
-                         const Text('الإجراء التالي لا يمكن التراجع عنه.'),
-                         const SizedBox(height: 16),
-                         FilledButton.icon(
-                          icon: const Icon(Icons.delete_forever),
-                          label: const Text('حذف هذا الـ Hub نهائياً'),
-                          onPressed: _deleteHub,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: Colors.red.shade700,
-                            foregroundColor: Colors.white,
+                                      ],
+                                    ),
+                                  ),
+                                  if (!isLeader)
+                                    IconButton(
+                                      icon: const Icon(
+                                          Icons.person_remove_outlined),
+                                      color: Colors.orange.shade300,
+                                      tooltip: 'طرد العضو',
+                                      onPressed: () => _removeMember(member),
+                                    )
+                                ],
+                              ),
+                              const Divider(),
+                              SwitchListTile(
+                                title:
+                                    const Text('إدارة المشاريع (إضافة/تعديل)'),
+                                value: member.canManageProjects,
+                                onChanged: isLeader
+                                    ? null
+                                    : (value) {
+                                        _updatePermissions(member,
+                                            canAddProj: value);
+                                      },
+                              ),
+                              SwitchListTile(
+                                title: const Text('السماح بإضافة أخطاء'),
+                                value: member.canAddBugs,
+                                onChanged: isLeader
+                                    ? null
+                                    : (value) {
+                                        _updatePermissions(member,
+                                            canAdd: value);
+                                      },
+                              ),
+                              SwitchListTile(
+                                title: const Text('السماح بتعديل الأخطاء'),
+                                value: member.canEditBugs,
+                                onChanged: isLeader
+                                    ? null
+                                    : (value) {
+                                        _updatePermissions(member,
+                                            canEdit: value);
+                                      },
+                              ),
+                              SwitchListTile(
+                                title: const Text('السماح باستخدام المحادثة'),
+                                value: member.canUseChat,
+                                onChanged: isLeader
+                                    ? null
+                                    : (value) {
+                                        _updatePermissions(member,
+                                            canChat: value);
+                                      },
+                              ),
+                              SwitchListTile(
+                                title: const Text('السماح بالفحص الذكي للكود'),
+                                value: member.canUseAiAudit,
+                                onChanged: isLeader
+                                    ? null
+                                    : (value) {
+                                        _updatePermissions(member,
+                                            canAudit: value);
+                                      },
+                              ),
+                            ],
                           ),
-                         )
-                      ],
-                    ),
-                  ),
+                        ),
+                      );
+                    }).toList(),
+                    _buildDangerZoneCard(), // The existing danger zone
+                  ],
+                );
+              },
+            ),
+    );
+  }
+
+  // --- NEW: Widget for the broadcast card ---
+  Widget _buildBroadcastCard() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      color: Theme.of(context).primaryColor.withOpacity(0.2),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _broadcastFormKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('إشعار لجميع الأعضاء',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              const Text(
+                  'أرسل رسالة فورية لجميع أعضاء الفريق. ستصل كإشعار على أجهزتهم.'),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _broadcastController,
+                maxLength: 100,
+                decoration: const InputDecoration(
+                  labelText: 'نص الرسالة',
+                  counterText: '',
+                ),
+                validator: (value) => (value?.trim().isEmpty ?? true)
+                    ? 'الرسالة لا يمكن أن تكون فارغة'
+                    : null,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                icon: _isSendingBroadcast
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.send_rounded),
+                label: Text(
+                    _isSendingBroadcast ? 'جاري الإرسال...' : 'إرسال الإشعار'),
+                onPressed: _isSendingBroadcast ? null : _sendBroadcast,
+              ),
+              const SizedBox(height: 8),
+  //             ElevatedButton.icon(
+  //               icon: const Icon(Icons.bug_report_rounded),
+  //               label: const Text('إرسال إشعار اختبار'),
+  //               onPressed: _sendTestNotification,
+  //               style: ElevatedButton.styleFrom(
+  //                 backgroundColor: Colors.grey.shade800,
+  //                 foregroundColor: Colors.white,
+  //               ),
+  //             ),
+  //             ElevatedButton(
+  // onPressed: () async {
+  //   try {
+  //     await _supabaseService.sendBroadcastNotification("هذا إشعار تجريبي لجميع الأعضاء");
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context).showSnackBar(
+  //         SnackBar(content: Text('تم إرسال الإشعار التجريبي'))
+  //       );
+  //     }
+  //   } catch (e) {
+  //     if (mounted) {
+  //       ScaffoldMessenger.of(context).showSnackBar(
+  //         SnackBar(content: Text('فشل الإرسال: $e'))
+  //       );
+  //     }
+  //   }
+  // },
+  // child: Text('إرسال إشعار تجريبي'),
+// )
+
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- NEW: Extracted danger zone to its own widget for clarity ---
+  Widget _buildDangerZoneCard() {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Card(
+        color: Colors.red.shade900.withOpacity(0.5),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('منطقة الخطر',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              const Text('الإجراء التالي لا يمكن التراجع عنه.'),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                icon: const Icon(Icons.delete_forever),
+                label: const Text('حذف هذا الـ Hub نهائياً'),
+                onPressed: _deleteHub,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.red.shade700,
+                  foregroundColor: Colors.white,
                 ),
               )
             ],
-          );
-        },
+          ),
+        ),
       ),
     );
   }

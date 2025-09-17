@@ -3,10 +3,7 @@ class Project {
   String name;
   String? description;
   final String? hubId;
-  
-  // --- تعديل: تم حذف الحقول الإضافية ---
   String? githubUrl;
-  String? apkDownloadUrl;
 
   Project({
     required this.id,
@@ -14,7 +11,6 @@ class Project {
     this.description,
     this.hubId,
     this.githubUrl,
-    this.apkDownloadUrl,
   });
 
   factory Project.fromJson(Map<String, dynamic> json) {
@@ -23,9 +19,7 @@ class Project {
       name: json['name'],
       description: json['description'],
       hubId: json['hub_id'],
-      // --- تعديل: تم حذف الحقول الإضافية ---
       githubUrl: json['github_url'],
-      apkDownloadUrl: json['apk_download_url'],
     );
   }
   
@@ -33,9 +27,7 @@ class Project {
     return {
       'name': name,
       'description': description,
-      // --- تعديل: تم حذف الحقول الإضافية ---
       'github_url': githubUrl,
-      'apk_download_url': apkDownloadUrl,
     };
   }
 }

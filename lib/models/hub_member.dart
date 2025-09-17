@@ -7,8 +7,9 @@ class HubMember {
   final bool canAddBugs;
   final bool canEditBugs;
   final bool canUseChat;
-  // ✨ --- Renamed for clarity to cover add/edit project --- ✨
-  final bool canManageProjects; 
+  final bool canManageProjects;
+  // --- إضافة: صلاحية جديدة للفحص الذكي ---
+  final bool canUseAiAudit;
 
   HubMember({
     required this.id,
@@ -20,6 +21,7 @@ class HubMember {
     required this.canEditBugs,
     required this.canUseChat,
     required this.canManageProjects,
+    required this.canUseAiAudit,
   });
 
   factory HubMember.fromJson(Map<String, dynamic> json) {
@@ -32,8 +34,9 @@ class HubMember {
       canAddBugs: json['can_add_bugs'] ?? false,
       canEditBugs: json['can_edit_bugs'] ?? false,
       canUseChat: json['can_use_chat'] ?? false,
-      // ✨ --- Mapped from 'can_add_projects' to 'canManageProjects' --- ✨
-      canManageProjects: json['can_manage_projects'] ?? false, 
+      canManageProjects: json['can_manage_projects'] ?? false,
+      // --- إضافة: قراءة الصلاحية الجديدة من قاعدة البيانات ---
+      canUseAiAudit: json['can_use_ai_audit'] ?? false,
     );
   }
 }

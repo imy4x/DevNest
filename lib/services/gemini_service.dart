@@ -1,290 +1,285 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../models/ai_chat_message.dart';
 import '../models/project.dart';
 import '../models/bug.dart';
+import 'dart:math';
+
+Future<T> _retry<T>(Future<T> Function() operation) async {
+  const maxRetries = 3;
+  int attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await operation();
+    } on SocketException catch (e) {
+      attempt++;
+      print('Network error (attempt $attempt): $e');
+      if (attempt >= maxRetries) rethrow;
+      await Future.delayed(Duration(seconds: pow(2, attempt).toInt()));
+    } on TimeoutException catch (e) {
+      attempt++;
+      print('Request timeout (attempt $attempt): $e');
+      if (attempt >= maxRetries) rethrow;
+      await Future.delayed(Duration(seconds: pow(2, attempt).toInt()));
+    } on http.ClientException catch (e) {
+       attempt++;
+      print('Client exception (attempt $attempt): $e');
+      if (attempt >= maxRetries) rethrow;
+      await Future.delayed(Duration(seconds: pow(2, attempt).toInt()));
+    }
+  }
+  throw Exception('Failed after multiple retries');
+}
 
 class GeminiService {
-  // --- START: NEW CHANGES FOR MODEL FALLBACK ---
-  final String _proModel = 'gemini-2.5-pro';
-  final String _flashModel = 'gemini-2.5-flash';
-  String _currentModel = 'gemini-2.5-pro';
-  Timer? _fallbackTimer;
+  final String _apiUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$geminiApiKey';
+  
+  final String _proApiUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=$geminiApiKey';
 
-  String _getApiUrl(String model) =>
-      'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$geminiApiKey';
-  // --- END: NEW CHANGES FOR MODEL FALLBACK ---
 
-  /// Handles a general chat conversation with fallback logic.
-  /// Returns a tuple containing the response message and a boolean indicating if a model switch occurred.
-  Future<(String, bool)> generalChat({
+  Future<String> generalChat({
     required String userMessage,
     required Project? project,
     required List<Bug> bugs,
     required List<AiChatMessage> history,
     String? codeContext,
   }) async {
+    // --- MODIFIED: Updated system prompt with new rules ---
     String systemContext = '''
-أنت "مساعد DevNest"، مساعد ذكاء اصطناعي خبير ومبرمج محترف تتحدث اللغة العربية بطلاقة.
-مهمتك هي مساعدة المطورين في حل مشاكلهم البرمجية، وتقديم اقتراحات بناءة، وشرح المفاهيم المعقدة بوضوح.
-كن دقيقاً، ومهذباً، وقدم إجابات عملية ومفيدة.
+أنت "مساعد DevNest"، خبير برمجي متخصص في Flutter. مهمتك هي تحليل المشاكل وتقديم اقتراحات وحلول نصية فقط.
+تحدث باللغة العربية بأسلوب احترافي ومباشر.
+
+**قواعد صارمة جداً يجب اتباعها:**
+1.  **ممنوع الأكواد نهائياً:** لا تقم أبداً بإدراج أي كود برمجي، أو مقتطفات، أو أسماء ملفات بتنسيق الكود. يجب أن يكون ردك نصاً شرحياً فقط.
+2.  **الإيجاز:** اجعل ردك موجزاً ومختصراً قدر الإمكان، وحافظ على أن يكون في حدود 250 كلمة.
+3.  **التشخيص:** اشرح السبب الجذري للمشكلة أو الاستفسار بوضوح.
+4.  **الاقتراح:** صف الحل المقترح شفهياً. يمكنك الإشارة إلى المفاهيم العامة أو الوظائف التي يجب تعديلها دون كتابة الكود الفعلي. مثلاً: "لتنفيذ ذلك، ستحتاج إلى تعديل الدالة المسؤولة عن الحفظ في قاعدة البيانات لتشمل حقل التاريخ."
 ''';
 
     if (project != null) {
       systemContext += '\n--- سياق المشروع الحالي ---\n';
       systemContext += 'الاسم: ${project.name}\n';
       systemContext += 'الوصف: ${project.description ?? "لا يوجد"}\n';
-      systemContext += 'رابط GitHub: ${project.githubUrl ?? "غير محدد"}\n';
-
+      
       if (bugs.isNotEmpty) {
         systemContext += '\nآخر الأخطاء المسجلة:\n';
-        for (var bug in bugs.take(5)) {
-          systemContext += '- عنوان: "${bug.title}", الحالة: ${bug.status}\n';
+        for (var bug in bugs.take(3)) {
+          systemContext += '- "${bug.title}" (الحالة: ${bug.status})\n';
         }
       } else {
-        systemContext += '\nلا توجد أخطاء مسجلة حالياً في هذا المشروع.\n';
+        systemContext += '\nلا توجد أخطاء مسجلة حالياً.\n';
       }
-      systemContext += '--- نهاية سياق المشروع ---\n';
-    } else {
-      systemContext += '\nالمستخدم لم يختر مشروعاً بعد.';
     }
 
+    // Code context is sent for analysis, but the AI is instructed not to return it.
     if (codeContext != null && codeContext.isNotEmpty) {
-      systemContext += '\n--- كود المشروع من مستودع GitHub ---\n';
-      systemContext +=
-          'فيما يلي محتويات الملفات الرئيسية في المشروع للمساعدة في التحليل:\n\n';
+      systemContext += '\n--- كود المشروع الكامل للتحليل ---\n';
       systemContext += codeContext;
       systemContext += '\n--- نهاية كود المشروع ---\n';
     }
 
     final List<Map<String, dynamic>> contents = [];
+
     for (var msg in history) {
       contents.add({
         'role': msg.role,
-        'parts': [
-          {'text': msg.content}
-        ]
+        'parts': [{'text': msg.content}]
       });
     }
+
     contents.add({
       'role': 'user',
-      'parts': [
-        {'text': userMessage}
-      ]
+      'parts': [{'text': userMessage}]
     });
 
-    final body = {
-      'contents': contents,
-      'systemInstruction': {
-        'parts': [
-          {'text': systemContext}
-        ]
-      }
-    };
-
     try {
-      final response = await http.post(
-        Uri.parse(_getApiUrl(_currentModel)),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      );
+      final response = await _retry(() => http.post(
+            Uri.parse(_apiUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'contents': contents,
+              'systemInstruction': {
+                'parts': [{'text': systemContext}]
+              },
+              'generationConfig': {
+                'temperature': 0.8,
+                // --- MODIFIED: Reduced max tokens to encourage shorter responses ---
+                'maxOutputTokens': 1024,
+              },
+            }),
+          ).timeout(const Duration(seconds: 90)));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        // --- FIX: Explicitly cast dynamic type to String ---
-        return (
-          data['candidates'][0]['content']['parts'][0]['text'] as String,
-          false
-        );
+        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+          return data['candidates'][0]['content']['parts'][0]['text'];
+        }
+        return "عذراً، لم يتمكن المساعد من إنشاء رد. قد تكون المشكلة متعلقة بسياسات السلامة.";
       } else {
-        throw HttpException('API Error: ${response.statusCode}');
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['error']?['message'] ?? response.body;
+        print('Gemini Error: $errorMessage');
+        throw Exception("عذراً، حدث خطأ أثناء التواصل مع المساعد الذكي.\n$errorMessage");
       }
     } catch (e) {
-      if (_currentModel == _proModel) {
-        print('Error with Pro model, falling back to Flash. Error: $e');
-        _currentModel = _flashModel;
-
-        _fallbackTimer?.cancel();
-        _fallbackTimer = Timer(const Duration(seconds: 25), () {
-          print('Fallback timer expired. Reverting to Pro model.');
-          _currentModel = _proModel;
-        });
-
-        try {
-          final fallbackResponse = await http.post(
-            Uri.parse(_getApiUrl(_currentModel)),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          );
-
-          if (fallbackResponse.statusCode == 200) {
-            final data = jsonDecode(fallbackResponse.body);
-            // --- FIX: Explicitly cast dynamic type to String ---
-            final content =
-                data['candidates'][0]['content']['parts'][0]['text'] as String;
-            return (content, true); // Success with fallback
-          } else {
-            return (
-              "عذراً، حدث خطأ أثناء التواصل مع المساعد الذكي. رمز الحالة: ${fallbackResponse.statusCode}",
-              false
-            );
-          }
-        } catch (fallbackError) {
-          return ("عذراً، حدث استثناء بعد التبديل: $fallbackError", false);
-        }
-      } else {
-        return ("عذراً، حدث استثناء: $e", false);
-      }
+      print('Gemini Service Exception: $e');
+      throw Exception("عذراً، فشل الاتصال بخدمة الذكاء الاصطناعي: $e");
     }
   }
 
+  // The rest of the file remains unchanged as it's for other features.
   Future<String> analyzeBugWithCodeContext({
-    required String bugTitle,
-    required String bugDescription,
+    required Bug bug,
+    required Project project,
     required String codeContext,
   }) async {
-    final prompt = '''
-أنت "مساعد DevNest"، مهندس برمجيات وخبير في تحليل الأكواد متخصص في اكتشاف الأخطاء وحلها. مهمتك هي تحليل الخطاء التالي في سياق الكود المرفق.
-
-**مهم جداً: يجب أن يكون ردك بالكامل عبارة عن كائن JSON صالح واحد فقط. لا تقم بإضافة أي نص قبل أو بعد كائن JSON.**
-
-يجب أن يتبع كائن JSON الهيكل الدقيق التالي:
-{
-  "verbalAnalysis": "string",
-  "codeSuggestions": "string",
-  "professionalPrompt": "string"
-}
-
----
-### إرشادات عامة
-
-**1. "verbalAnalysis" (التحليل الشفهي):**
-   * **خطوة التحقق الأولية (مهم جداً):**
-     * **تحليل السياق:** قارن وصف الخطأ أو التحسين مع الكود المصدري المقدم.
-     * **إذا كان الكود لا يعكس المشكلة بشكل واضح:** لا تتوقف. بدلاً من ذلك، ابدأ تحليلك بعبارة مثل: "لم أتمكن من تحديد المشكلة بوضوح في الكود المقدم، قد يكون الخطأ في ملف آخر أو أن الوصف غير مكتمل. مع ذلك، بناءً على المعلومات المتاحة، هذا هو تحليلي المقترح:". ثم أكمل باقي التحليل بأفضل شكل ممكن.
-     * **إذا كنت تعتقد أن المشكلة قد تم حلها بالفعل:** اذكر ذلك بوضوح مع الدليل من الكود الذي يدعم استنتاجك، مثلاً: "يبدو أن هذا التحسين قد تم تطبيقه بالفعل، حيث أن الملف `path/to/file.dart` يحتوي على الويدجت `NewFeatureWidget` التي تنفذ المطلوب.".
-     * **إذا كان سياق الكود يبدو غير مكتمل:** اذكر ذلك في تحليلك. على سبيل المثال: "لتحليل دقيق، أحتاج إلى رؤية محتوى الملف `xyz.dart` الذي يتم استدعاؤه هنا".
-   * **بعد التحقق، أكمل التحليل كالتالي:**
-     * **التصنيف:** حدد ما إذا كانت "خطأ برمجي" (Bug) أو "فرصة تحسين" (Enhancement).
-     * **التشخيص:** اشرح السبب الجذري للمشكلة ببساطة ووضوح.
-     * **الحل:** صف الحل المقترح بشكل موجز ومفهوم دون إدراج أي كود برمجي.
-     * **التأثير:** اذكر بإيجاز كيف سيؤثر هذا التعديل على التطبيق (مثال: "سيؤدي هذا إلى تحسين الأداء" أو "سيمنع هذا حدوث خطأ عند...").
-
-**2. "codeSuggestions" (اقتراحات الكود):**
-   * هذا القسم يجب أن يحتوي على التعديلات البرمجية المقترحة.
-   * **مهم جداً:** لكل ملف يحتاج إلى تعديل، يجب عليك تقديم **المحتوى الكامل للملف** بعد تطبيق التغييرات عليه.
-   * استخدم تنسيق الماركداون التالي بدقة:
-       
-       ### FILE: path/to/your/file.dart
-       
-       ```dart
-       // المحتوى الكامل للملف هنا
-       // مع التعديلات المقترحة مضمنة
-       import 'package:flutter/material.dart';
-       
-       class MyWidget extends StatelessWidget {
-         // ... باقي الكود
-       }
-       ```
-
-**3. "professionalPrompt" (البرومبت الاحترافي):**
-   * أنشئ برومبت احترافياً ومفصلاً باللغة العربية، ليكون جاهزاً للنسخ واللصق في مساعد ذكاء اصطناعي آخر (مثل GPT-4 أو Claude).
-   * يجب أن يتضمن البرومبت:
-       * **الهدف:** "أحتاج إلى حل مشكلة برمجية في تطبيقي المبني باستخدام Flutter."
-       * **تفاصيل المشكلة:** عنوان الخطأ ووصفه.
-       * **السلوك المتوقع مقابل الفعلي.**
-       * **طلب الحل:** "الرجاء تقديم الحل المقترح مع شرح للكود."
-       * **توجيه مهم:** يجب أن ينتهي البرومبت بعبارة واضحة تطلب من المستخدم إرفاق الملفات ذات الصلة لتحليلها، مثلاً: "لتحليل هذه المشكلة بدقة، أرفق لي محتويات الملفات التالية: `path/to/file1.dart`, `path/to/file2.dart`". اذكر هنا أسماء الملفات التي قمت بتعديلها في `codeSuggestions`.
-
----
-### معلومات الخطأ لتحليلها
-
-- **العنوان:** "$bugTitle"
-- **الوصف:** "$bugDescription"
-
----
-### الكود المصدري للمشروع
-
-```
-$codeContext
-```
----
-
-تذكر، أجب فقط بكائن JSON الخام والصالح.
+    const systemPrompt = '''
+أنت "مساعد DevNest"، مبرمج خبير ومساعد ذكاء اصطناعي متخصص في Flutter و Dart.
+مهمتك هي تحليل مشكلة برمجية محددة ضمن سياق مشروع كامل وتقديم حل متكامل.
+**قواعد صارمة جداً يجب اتباعها:**
+1.  **الشرح أولاً:** ابدأ دائماً بشرح نصي واضح للمشكلة وسببها الجذري والحل المقترح.
+2.  **الحل الكامل:** بعد الشرح، قدم الحل الكامل على شكل ملفات كاملة جاهزة للنسخ والاستبدال. لا تستخدم أبداً مقتطفات أو تعليقات مثل `// ... existing code`.
+3.  **تنسيق الملفات الإلزامي (الأكثر أهمية):**
+    * يجب أن يأتي الشرح **قبل** أي كتلة كود.
+    * يجب وضع كل ملف معدل داخل المحددات التالية بشكل صارم:
+        --- START FILE: path/to/your/file.dart ---
+        [CODE HERE]
+        --- END FILE ---
+    * **ممنوع منعاً باتاً** وضع أي نص أو رموز أو مسافات بيضاء قبل `--- START FILE:` أو بعد `--- END FILE ---`.
 ''';
-    final body = {
-      'contents': [
-        {
-          'parts': [
-            {'text': prompt}
-          ]
-        }
-      ],
-      'generationConfig': {
-        'responseMimeType': 'application/json',
-      }
-    };
+
+    final userPrompt = '''
+--- تفاصيل الخطأ/التحسين المطلوب تحليله ---
+النوع: ${bug.type}
+العنوان: "${bug.title}"
+الوصف: "${bug.description}"
+
+--- كود المشروع ---
+$codeContext
+--- نهاية كود المشروع ---
+
+الرجاء تحليل هذا الخطأ بناءً على الكود المقدم واتباع القواعد المحددة في تعليمات النظام بأقصى درجات الدقة. ابدأ بالشرح ثم ضع الملفات المعدلة.
+''';
 
     try {
-      final response = await http.post(
-        Uri.parse(_getApiUrl(_currentModel)),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      );
+      final response = await _retry(() => http.post(
+            Uri.parse(_proApiUrl), // Using Pro for analysis
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'contents': [
+                {'parts': [{'text': userPrompt}]}
+              ],
+              'systemInstruction': {
+                'parts': [{'text': systemPrompt}]
+              },
+              'generationConfig': {
+                'temperature': 0.7,
+                'maxOutputTokens': 8192,
+              },
+            }),
+          ).timeout(const Duration(seconds: 90)));
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        // --- FIX: Explicitly cast dynamic type to String ---
-        return data['candidates'][0]['content']['parts'][0]['text'] as String;
+        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+          return data['candidates'][0]['content']['parts'][0]['text'];
+        }
+        throw Exception("عذراً، لم يتمكن المساعد من إنشاء رد.");
       } else {
-        throw HttpException('API Error: ${response.statusCode}');
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['error']?['message'] ?? response.body;
+        throw Exception("فشل الحصول على اقتراح: $errorMessage");
       }
     } catch (e) {
-      if (_currentModel == _proModel) {
-        print(
-            'Error with Pro model for bug analysis, falling back to Flash. Error: $e');
-        _currentModel = _flashModel;
+      print('Gemini Service Exception (analyzeBug): $e');
+      throw Exception("فشل الاتصال بالخدمة لتحليل الخطأ: $e");
+    }
+  }
+  
+  Future<String> performCodeAudit({
+    required String codeContext,
+    required String auditType,
+    required List<Bug> existingBugs,
+  }) async {
+    final auditDescription = auditType == 'bugs'
+        ? 'ابحث عن الأخطاء المحتملة والمشاكل المنطقية فقط. يجب أن تكون أنواع النتائج "حرج" أو "بسيط" حصراً.'
+        : 'اقترح تحسينات على الكود، إعادة هيكلة، أو ميزات جديدة. يجب أن يكون نوع كل النتائج "تحسين" حصراً.';
 
-        _fallbackTimer?.cancel();
-        _fallbackTimer = Timer(const Duration(seconds: 25), () {
-          print('Fallback timer expired. Reverting to Pro model.');
-          _currentModel = _proModel;
-        });
+    final allowedTypes = auditType == 'bugs'
+        ? '"حرج", "بسيط"'
+        : '"تحسين"';
 
-        try {
-          final fallbackResponse = await http.post(
-            Uri.parse(_getApiUrl(_currentModel)),
+    final systemPrompt = '''
+أنت "Code Auditor"، خبير دقيق جداً في تحليل شيفرة Flutter.
+مهمتك هي فحص الكود المقدم، ومقارنته بقائمة المشاكل المسجلة حالياً، وتقديم قائمة بالمشاكل **الجديدة كلياً** فقط، على هيئة JSON.
+**قواعد صارمة جداً للإخراج:**
+1.  **JSON فقط:** يجب أن يكون ردك عبارة عن سلسلة JSON صالحة وقابلة للتحليل **فقط**. لا تضف أي نص توضيحي أو علامات ```json```.
+2.  **الدقة المطلقة:** تحقق من كل خطأ تقترحه بعناية فائقة. يجب أن تكون الأخطاء حقيقية ومنطقية وموجودة في الكود. لا تخمن أبداً.
+3.  **تجنب التكرار (الأهم):**
+    * **اقرأ "قائمة المشاكل الحالية" جيداً.**
+    * **لا تقترح أي مشكلة لها نفس المعنى أو المفهوم لمشكلة موجودة بالفعل**، حتى لو كانت بصياغة مختلفة.
+    * مهمتك هي إيجاد مشاكل **مختلفة وجديدة تماماً**.
+4.  **الرد الفارغ:** إذا لم تجد أي أخطاء أو تحسينات **جديدة ومهمة** بعد تحليلك الدقيق، قم بإرجاع مصفوفة JSON فارغة: `[]`. هذا رد مقبول ومطلوب عند عدم وجود جديد.
+5.  **هيكل الـ JSON:** يجب أن يكون الـ JSON عبارة عن مصفوفة (array) من الكائنات (objects). كل كائن يجب أن يحتوي على الحقول الثلاثة التالية: `title` (String), `description` (String), `type` (String must be one of [$allowedTypes]).
+''';
+
+    String existingBugsString = 'لا توجد مشاكل مسجلة حالياً.';
+    if (existingBugs.isNotEmpty) {
+      existingBugsString = existingBugs.map((b) => '- العنوان: ${b.title}\n  الوصف: ${b.description}').join('\n');
+    }
+
+    final userPrompt = '''
+--- كود المشروع ---
+$codeContext
+--- نهاية كود المشروع ---
+
+--- قائمة المشاكل الحالية (لا تقم بتكرار أي شيء منها أو ما يشبهها في المعنى) ---
+$existingBugsString
+--- نهاية القائمة ---
+
+المهمة: $auditDescription
+الرجاء تحليل الكود وإرجاع النتائج بصيغة JSON حسب القواعد الصارمة المحددة في تعليمات النظام.
+''';
+
+    try {
+      final response = await _retry(() => http.post(
+            Uri.parse(_proApiUrl), // Using Pro for analysis
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          );
-          if (fallbackResponse.statusCode == 200) {
-            final data = jsonDecode(fallbackResponse.body);
-            // --- FIX: Explicitly cast dynamic type to String ---
-            return data['candidates'][0]['content']['parts'][0]['text']
-                as String;
-          } else {
-            throw HttpException(
-                'Fallback API Error: ${fallbackResponse.statusCode}');
-          }
-        } catch (fallbackError) {
-          return jsonEncode({
-            "verbalAnalysis":
-                "عذراً، حدث استثناء مزدوج أثناء محاولة تحليل الخطأ.",
-            "codeSuggestions": "Exception: ${fallbackError.toString()}",
-            "professionalPrompt":
-                "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي بعد محاولة التبديل: ${fallbackError.toString()}"
-          });
+            body: jsonEncode({
+              'contents': [
+                {'parts': [{'text': userPrompt}]}
+              ],
+              'systemInstruction': {
+                'parts': [{'text': systemPrompt}]
+              },
+              'generationConfig': {
+                'temperature': 0.5,
+                'maxOutputTokens': 8192,
+                'responseMimeType': 'application/json',
+              },
+            }),
+          ).timeout(const Duration(seconds: 90)));
+
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+          return data['candidates'][0]['content']['parts'][0]['text'];
         }
+        throw Exception("لم يتمكن المساعد من إنشاء رد JSON.");
       } else {
-        return jsonEncode({
-          "verbalAnalysis": "عذراً، حدث استثناء أثناء محاولة تحليل الخطأ.",
-          "codeSuggestions": "Exception: ${e.toString()}",
-          "professionalPrompt":
-              "الرجاء المساعدة في حل مشكلة نتج عنها الاستثناء التالي: ${e.toString()}"
-        });
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['error']?['message'] ?? response.body;
+        throw Exception("فشل الفحص الذكي: $errorMessage");
       }
+    } catch (e) {
+      print('Gemini Service Exception (performAudit): $e');
+      throw Exception("فشل الاتصال بالخدمة لإجراء الفحص: $e");
     }
   }
 }

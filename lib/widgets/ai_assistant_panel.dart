@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'dart:async';
 import '../models/project.dart';
@@ -9,6 +10,7 @@ import '../services/github_service.dart';
 import '../services/supabase_service.dart';
 import 'app_dialogs.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'code_file_view.dart';
 
 class AiAssistantPanel extends StatefulWidget {
   final Project? projectContext;
@@ -27,15 +29,17 @@ class AiAssistantPanel extends StatefulWidget {
 class _AiAssistantPanelState extends State<AiAssistantPanel> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  // --- RE-ADDED: GeminiService instance for client-side calls ---
   final GeminiService _geminiService = GeminiService();
   final SupabaseService _supabaseService = SupabaseService();
   final GitHubService _githubService = GitHubService();
 
-  bool _isLoading = false;
   bool _isAnalyzingCode = false;
-  String? _codeContext;
+  // --- RE-ADDED: Code context is needed for the Gemini call ---
+  String? _codeContext; 
 
   Stream<List<AiChatMessage>>? _chatStream;
+  List<AiChatMessage> _messages = []; 
 
   @override
   void initState() {
@@ -51,7 +55,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     super.didUpdateWidget(oldWidget);
     if (widget.projectContext?.id != oldWidget.projectContext?.id) {
       _setupChatStream();
-      _codeContext = null;
+      _codeContext = null; 
       if (widget.projectContext?.githubUrl?.isNotEmpty ?? false) {
         _analyzeCodebase();
       }
@@ -93,17 +97,15 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
         widget.projectContext!.githubUrl!.isEmpty) return;
 
     setState(() => _isAnalyzingCode = true);
-
     try {
       final code = await _githubService
           .fetchRepositoryCodeAsString(widget.projectContext!.githubUrl!);
       setState(() {
-        _codeContext = code;
+         _codeContext = code; 
       });
+      if(mounted) showSuccessDialog(context, 'تم تحليل الكود بنجاح. يمكنك الآن طرح أسئلة حوله.');
     } catch (e) {
-      if (mounted) {
-        showErrorDialog(context, 'فشل تحليل الكود: $e');
-      }
+      if (mounted) showErrorDialog(context, 'فشل تحليل الكود: $e');
     } finally {
       if (mounted) {
         setState(() => _isAnalyzingCode = false);
@@ -111,6 +113,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     }
   }
 
+  // --- REWRITTEN: New `sendMessage` logic ---
   Future<void> _sendMessage() async {
     final canChat = widget.myMembership?.canUseChat ?? false;
     if (!canChat) {
@@ -118,67 +121,71 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
       return;
     }
 
-    if (_controller.text.trim().isEmpty || widget.projectContext == null)
-      return;
+    if (_controller.text.trim().isEmpty || widget.projectContext == null) return;
 
     final userMessage = _controller.text.trim();
     final projectId = widget.projectContext!.id;
     _controller.clear();
     FocusScope.of(context).unfocus();
 
-    await _supabaseService.addChatMessage(
-        projectId: projectId, role: 'user', content: userMessage);
+    try {
+      // Step 1: Add user message to DB immediately
+      await _supabaseService.addChatMessage(
+          projectId: projectId, role: 'user', content: userMessage);
+      
+      _scrollToBottom();
 
-    setState(() => _isLoading = true);
-    _scrollToBottom();
+      // Step 2: Trigger the AI response generation but DON'T await it.
+      // This lets the UI continue without waiting for the network call to finish.
+      _triggerGeminiResponse(projectId, userMessage);
 
-    final bugs = await _supabaseService.getBugsForProject(projectId);
-    final history = await _supabaseService.getRecentChatHistory(projectId);
-
-    // --- START: MODIFIED FOR FALLBACK AND SNACKBAR ---
-    final (response, modelSwitched) = await _geminiService.generalChat(
-      userMessage: userMessage,
-      project: widget.projectContext,
-      bugs: bugs,
-      history: history,
-      codeContext: _codeContext,
-    );
-
-    if (modelSwitched && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('حدث خطأ، تم التبديل إلى نموذج أسرع مؤقتاً.'),
-          duration: const Duration(seconds: 4),
-          backgroundColor: Colors.orange.shade700,
-        ),
-      );
+    } catch(e) {
+      if (mounted) {
+        showErrorDialog(context, "فشل إرسال الرسالة: $e");
+      }
     }
-    // --- END: MODIFIED FOR FALLBACK AND SNACKBAR ---
-
-    await _supabaseService.addChatMessage(
-        projectId: projectId, role: 'model', content: response);
-
-    if (mounted) {
-      setState(() => _isLoading = false);
-    }
-    _scrollToBottom();
   }
 
-  Future<void> _clearChatHistory() async {
-    final bool isLeader = widget.myMembership?.role == 'leader';
-    if (!isLeader) {
-      showPermissionDeniedDialog(context);
-      return;
-    }
+  /// This function runs in the background to get and save the AI's response.
+  Future<void> _triggerGeminiResponse(String projectId, String userMessage) async {
+     try {
+      final bugs = await _supabaseService.getBugsForProject(projectId);
+      final history = await _supabaseService.getRecentChatHistory(projectId);
 
+      final response = await _geminiService.generalChat(
+        userMessage: userMessage,
+        project: widget.projectContext,
+        bugs: bugs,
+        history: history,
+        codeContext: _codeContext,
+      );
+
+      // Important: Check if the widget is still alive before saving the response
+      if (!mounted) return;
+
+      await _supabaseService.addChatMessage(
+          projectId: projectId, role: 'model', content: response);
+
+    } catch(e) {
+      if (!mounted) return; // Don't show dialog if widget is disposed
+      
+      showTryAgainLaterDialog(context);
+      await _supabaseService.addChatMessage(
+          projectId: projectId, role: 'model', content: 'عذراً، حدث خطأ ولم أتمكن من إكمال الطلب.');
+    }
+  }
+
+
+  Future<void> _clearChatHistory() async {
     if (widget.projectContext == null) return;
 
     final confirm = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('مسح المحادثة'),
-        content: const Text(
-            'هل أنت متأكد من رغبتك في مسح جميع رسائل هذه المحادثة؟ لا يمكن التراجع عن هذا الإجراء.'),
+        content:
+            const Text('هل أنت متأكد من رغبتك في مسح جميع رسائل هذه المحادثة؟'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -209,144 +216,139 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
   @override
   Widget build(BuildContext context) {
     final bool hasProject = widget.projectContext != null;
-    // --- START: NEW VARIABLE FOR EASIER STATE CHECKING ---
-    final bool isInteractable = !_isLoading && hasProject && !_isAnalyzingCode;
-    // --- END: NEW VARIABLE ---
+    final bool canChat = widget.myMembership?.canUseChat ?? false;
+    final bool isLeader = widget.myMembership?.role == 'leader';
+    final bool hasGithubLink =
+        widget.projectContext?.githubUrl?.isNotEmpty ?? false;
 
     return Drawer(
-      child: Scaffold(
-        resizeToAvoidBottomInset: true,
-        backgroundColor: Theme.of(context).drawerTheme.backgroundColor,
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    if (hasProject)
-                      IconButton(
-                        icon: const Icon(Icons.delete_sweep_outlined),
-                        onPressed: _clearChatHistory,
-                        tooltip: 'مسح سجل المحادثة',
-                      )
-                    else
-                      const SizedBox(width: 48),
-                    Column(
-                      children: [
-                        Text('المساعد الذكي',
-                            style: Theme.of(context).textTheme.headlineSmall),
-                        if (hasProject)
-                          Text('مشروع: ${widget.projectContext!.name}',
-                              style: Theme.of(context).textTheme.bodySmall),
-                      ],
-                    ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  if (isLeader && hasProject)
+                    IconButton(
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      onPressed: _clearChatHistory,
+                      tooltip: 'مسح سجل المحادثة',
+                    )
+                  else
                     const SizedBox(width: 48),
-                  ],
-                ),
-                const Divider(height: 24),
-                // --- START: MODIFIED LOADING INDICATOR ---
-                if (_isAnalyzingCode)
-                  const Padding(
-                      padding: EdgeInsets.only(bottom: 12.0),
-                      child: Column(
-                        children: [
-                          LinearProgressIndicator(),
-                          SizedBox(height: 4),
-                          Text('جاري قراءة الملفات... الرجاء الانتظار')
-                        ],
-                      )),
-                // --- END: MODIFIED LOADING INDICATOR ---
-                Expanded(
-                  child: !hasProject
-                      ? const Center(
-                          child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
-                      : StreamBuilder<List<AiChatMessage>>(
-                          stream: _chatStream,
-                          builder: (context, snapshot) {
-                            if (snapshot.connectionState ==
-                                    ConnectionState.waiting &&
-                                !snapshot.hasData) {
-                              return const Center(
-                                  child: CircularProgressIndicator());
-                            }
-                            if (snapshot.hasError) {
-                              return Center(
-                                  child: Text(
-                                      'خطأ في تحميل المحادثة: ${snapshot.error}'));
-                            }
-
-                            final messages = snapshot.data ?? [];
-
-                            if (messages.isEmpty && !_isLoading) {
-                              return const Center(
-                                  child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
-                            }
-
-                            WidgetsBinding.instance
-                                .addPostFrameCallback((_) => _scrollToBottom());
-
-                            final itemCount =
-                                messages.length + (_isLoading ? 1 : 0);
-
-                            return ListView.builder(
-                              controller: _scrollController,
-                              itemCount: itemCount,
-                              itemBuilder: (context, index) {
-                                if (index == messages.length && _isLoading) {
-                                  return _buildTypingIndicator();
-                                }
-                                final message = messages[index];
-                                return _buildMessageBubble(message);
-                              },
-                            );
-                          },
-                        ),
-                ),
-                Container(
-                  margin: const EdgeInsets.only(top: 8.0),
-                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                  decoration: BoxDecoration(
-                      color: Theme.of(context).inputDecorationTheme.fillColor,
-                      borderRadius: BorderRadius.circular(30.0),
-                      border:
-                          Border.all(color: Theme.of(context).dividerColor)),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                  Column(
                     children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _controller,
-                          // --- START: MODIFIED ENABLED AND HINTTEXT ---
-                          enabled: isInteractable,
-                          decoration: InputDecoration(
-                            hintText: _isAnalyzingCode
-                                ? 'الرجاء الانتظار...'
-                                : !hasProject
-                                    ? 'اختر مشروعاً أولاً'
-                                    : 'اسأل عن مشروعك...',
-                            border: InputBorder.none,
-                          ),
-                          // --- END: MODIFIED ENABLED AND HINTTEXT ---
-                          keyboardType: TextInputType.multiline,
-                          minLines: 1,
-                          maxLines: 5,
-                          textInputAction: TextInputAction.newline,
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.send),
-                        // --- MODIFIED ONPRESSED ---
-                        onPressed: isInteractable ? _sendMessage : null,
-                        color: Theme.of(context).primaryColor,
-                      ),
+                      Text('المساعد الذكي',
+                          style: Theme.of(context).textTheme.headlineSmall),
+                      if (hasProject)
+                        Text('مشروع: ${widget.projectContext!.name}',
+                            style: Theme.of(context).textTheme.bodySmall),
                     ],
                   ),
-                ),
-              ],
+                  if (hasGithubLink)
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _isAnalyzingCode ? null : _analyzeCodebase,
+                      tooltip: 'إعادة قراءة وتحليل الكود من GitHub',
+                    )
+                  else
+                    const SizedBox(width: 48),
+                ],
+              ),
             ),
-          ),
+            const Divider(height: 1),
+            if (_isAnalyzingCode)
+              const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                  child: Column(
+                    children: [
+                      LinearProgressIndicator(),
+                      SizedBox(height: 4),
+                      Text('جاري قراءة وتحليل الكود...')
+                    ],
+                  )),
+            Expanded(
+              child: !hasProject
+                  ? const Center(
+                      child: Text('الرجاء اختيار مشروع لبدء المحادثة.'))
+                  : StreamBuilder<List<AiChatMessage>>(
+                      stream: _chatStream,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                                ConnectionState.waiting &&
+                            !snapshot.hasData) {
+                          return const Center(
+                              child: CircularProgressIndicator());
+                        }
+                        if (snapshot.hasError) {
+                          return Center(
+                              child: Text('خطأ: ${snapshot.error}'));
+                        }
+
+                        _messages = snapshot.data ?? [];
+
+                        if (_messages.isEmpty) {
+                          return const Center(
+                              child: Text('مرحباً! كيف يمكنني مساعدتك؟'));
+                        }
+
+                        WidgetsBinding.instance
+                            .addPostFrameCallback((_) => _scrollToBottom());
+                        
+                        final bool showTypingIndicator = _messages.isNotEmpty && _messages.last.role == 'user';
+
+                        final itemCount =
+                            _messages.length + (showTypingIndicator ? 1 : 0);
+
+                        return ListView.builder(
+                          controller: _scrollController,
+                          itemCount: itemCount,
+                          padding: const EdgeInsets.symmetric(vertical: 8.0),
+                          itemBuilder: (context, index) {
+                            if (index == _messages.length && showTypingIndicator) {
+                              return _buildTypingIndicator();
+                            }
+                            final message = _messages[index];
+                            return _buildMessageBubble(message);
+                          },
+                        );
+                      },
+                    ),
+            ),
+            Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
+                  left: 16,
+                  right: 16,
+                  top: 8),
+              child: TextField(
+                controller: _controller,
+                enabled: hasProject && canChat && !_isAnalyzingCode,
+                decoration: InputDecoration(
+                  hintText: !hasProject
+                      ? 'اختر مشروعاً أولاً'
+                      : (_isAnalyzingCode
+                          ? 'جاري تحليل الكود...'
+                          : (canChat
+                              ? 'اسأل عن مشروعك...'
+                              : 'ليس لديك صلاحية للمحادثة')),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.send),
+                    onPressed: (
+                           !hasProject ||
+                            !canChat ||
+                            _isAnalyzingCode)
+                        ? null
+                        : _sendMessage,
+                  ),
+                ),
+                onSubmitted: (_) => _sendMessage(),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -372,7 +374,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                   strokeWidth: 2, color: Colors.grey.shade400),
             ),
             const SizedBox(width: 10),
-            const Text("...يكتب"),
+            const Text("...يفكر"),
           ],
         ),
       ),
@@ -381,11 +383,36 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
 
   Widget _buildMessageBubble(AiChatMessage message) {
     final isUser = message.role == 'user';
+    final content = message.content;
+    
+    // This logic to handle code blocks can be removed if you are certain the AI won't send them.
+    // However, it's safer to leave it to gracefully handle any accidental code snippets.
+    final fileRegex = RegExp(
+      r'--- START FILE: (.*?) ---\s*(.*?)\s*--- END FILE ---',
+      dotAll: true, caseSensitive: false);
+
+    final matches = fileRegex.allMatches(content);
+    if (matches.isNotEmpty) {
+      // If the AI accidentally sends code, show a placeholder message.
+      return _buildMessageBubble(
+        AiChatMessage(
+          id: message.id, 
+          userId: message.userId,
+          projectId: message.projectId, 
+          role: message.role, 
+          content: '[تم استلام محتوى برمجي، ولكن تم حجبه بناءً على طلبك.]', 
+          createdAt: message.createdAt
+        )
+      );
+    }
+
     return Align(
       alignment: isUser
           ? AlignmentDirectional.centerEnd
           : AlignmentDirectional.centerStart,
       child: Container(
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
         margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
         decoration: BoxDecoration(
@@ -393,20 +420,24 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
               ? Theme.of(context).primaryColor
               : Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(12),
+          border: isUser
+              ? null
+              : Border.all(color: Colors.grey.shade700, width: 0.5),
         ),
         child: MarkdownBody(
-          data: message.content,
-          selectable: true,
-          onTapLink: (text, href, title) async {
-            if (href != null) {
-              final uri = Uri.parse(href);
-              if (await canLaunchUrl(uri)) {
-                await launchUrl(uri);
+            data: content,
+            selectable: true,
+            onTapLink: (text, href, title) async {
+              if (href != null) {
+                final uri = Uri.parse(href);
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri);
+                }
               }
-            }
-          },
-        ),
+            },
+          )
       ),
     );
   }
 }
+

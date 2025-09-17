@@ -1,32 +1,49 @@
 import 'package:flutter/material.dart';
+import '../models/bug.dart';
 import '../services/supabase_service.dart';
 // --- إضافة: استيراد نوافذ الحوار ---
-import 'widgets/app_dialogs.dart';
+import 'app_dialogs.dart';
 
-class AddBugDialog extends StatefulWidget {
-  final String projectId;
-  final VoidCallback onBugAdded;
 
-  const AddBugDialog({
+class EditBugDialog extends StatefulWidget {
+  final Bug bug;
+  final VoidCallback onBugEdited;
+
+  const EditBugDialog({
     super.key,
-    required this.projectId,
-    required this.onBugAdded,
+    required this.bug,
+    required this.onBugEdited,
   });
 
   @override
-  State<AddBugDialog> createState() => _AddBugDialogState();
+  State<EditBugDialog> createState() => _EditBugDialogState();
 }
 
-class _AddBugDialogState extends State<AddBugDialog> {
+class _EditBugDialogState extends State<EditBugDialog> {
   final _formKey = GlobalKey<FormState>();
-  final _titleController = TextEditingController();
-  final _descriptionController = TextEditingController();
+  late TextEditingController _titleController;
+  late TextEditingController _descriptionController;
   bool _isSubmitting = false;
 
-  String _selectedType = 'بسيط';
+  late String _selectedType;
   final _bugTypes = ['حرج', 'بسيط', 'تحسين'];
 
-  Future<void> _submitBug() async {
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.bug.title);
+    _descriptionController = TextEditingController(text: widget.bug.description);
+    _selectedType = widget.bug.type;
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitChanges() async {
     if (_formKey.currentState!.validate()) {
       setState(() => _isSubmitting = true);
 
@@ -36,19 +53,17 @@ class _AddBugDialogState extends State<AddBugDialog> {
           'title': _titleController.text.trim(),
           'description': _descriptionController.text.trim(),
           'type': _selectedType,
-          'project_id': widget.projectId,
-          'status': 'جاري',
         };
-        await supabaseService.addBug(bugData);
+        await supabaseService.updateBug(widget.bug.id, bugData);
 
         if (mounted) {
           Navigator.of(context).pop();
-          widget.onBugAdded();
+          widget.onBugEdited();
         }
       } catch (e) {
         // --- تعديل: استبدال SnackBar بنافذة حوار ---
         if (mounted) {
-          showErrorDialog(context, 'فشل في إضافة الخطأ: $e');
+          showErrorDialog(context, 'فشل في تعديل الخطأ: $e');
         }
       } finally {
         if (mounted) {
@@ -61,7 +76,7 @@ class _AddBugDialogState extends State<AddBugDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('إضافة جديد'),
+      title: const Text('تعديل الخطأ/التحسين'),
       content: Form(
         key: _formKey,
         child: SingleChildScrollView(
@@ -71,16 +86,14 @@ class _AddBugDialogState extends State<AddBugDialog> {
               TextFormField(
                 controller: _titleController,
                 decoration: const InputDecoration(labelText: 'العنوان'),
-                validator: (value) =>
-                    value!.trim().isEmpty ? 'الرجاء إدخال عنوان' : null,
+                validator: (value) => value!.trim().isEmpty ? 'الرجاء إدخال عنوان' : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _descriptionController,
                 decoration: const InputDecoration(labelText: 'الوصف'),
                 maxLines: 4,
-                validator: (value) =>
-                    value!.trim().isEmpty ? 'الرجاء إدخال وصف' : null,
+                validator: (value) => value!.trim().isEmpty ? 'الرجاء إدخال وصف' : null,
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
@@ -106,15 +119,13 @@ class _AddBugDialogState extends State<AddBugDialog> {
           child: const Text('إلغاء'),
         ),
         ElevatedButton(
-          onPressed: _isSubmitting ? null : _submitBug,
+          onPressed: _isSubmitting ? null : _submitChanges,
           child: _isSubmitting
               ? const SizedBox(
-                  height: 20,
-                  width: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white),
+                  height: 20, width: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                 )
-              : const Text('إضافة'),
+              : const Text('حفظ التعديلات'),
         ),
       ],
     );

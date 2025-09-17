@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/project.dart';
 import '../models/hub.dart';
 import '../models/hub_member.dart';
 import '../services/supabase_service.dart';
-import 'bug_tracker_view.dart';
+import '../screens/bug_tracker_view.dart';
 import '../widgets/ai_assistant_panel.dart';
 import '../widgets/project_sidebar.dart';
 import '../widgets/add_edit_project_dialog.dart';
+import '../widgets/app_dialogs.dart';
 import 'hub_management_screen.dart';
 import 'initial_hub_screen.dart';
 import 'dart:async';
@@ -27,13 +30,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Hub? _currentHub;
   HubMember? _myMembership;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey<ProjectSidebarState> _sidebarKey = GlobalKey<ProjectSidebarState>();
   final GlobalKey<BugTrackerViewState> _bugTrackerKey = GlobalKey<BugTrackerViewState>();
+
 
   HubLoadState _hubLoadState = HubLoadState.loading;
 
   StreamSubscription? _hubMembersSubscription;
   StreamSubscription? _hubSubscription;
   Timer? _kickCheckTimer;
+  
+  // ✅ --- (متغير جديد: لمنع مشكلة الـ Race Condition عند المغادرة) ---
+  bool _isLeaving = false;
+
 
   bool get _isLeader => _myMembership?.role == 'leader';
 
@@ -94,15 +103,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _cleanupAndNavigate(
       title: 'تم طردك',
       content:
-          'لقد تم إزالتك من الـ Hub. يجب عليك الانضمام إلى hub جديد أو إنشاء واحد.',
+          'لقد تم إزالتك من الفريق. يجب عليك الانضمام إلى فريق جديد أو إنشاء واحد.',
     );
   }
 
   void _handleHubDeleted() {
     _cleanupAndNavigate(
-      title: 'Hub لم يعد موجوداً',
+      title: 'الفريق لم يعد موجوداً',
       content:
-          'يبدو أن الـ Hub الذي كنت فيه قد تم حذفه. يجب عليك الانضمام أو إنشاء hub جديد.',
+          'يبدو أن الفريق الذي كنت فيه قد تم حذفه. يجب عليك الانضمام أو إنشاء فريق جديد.',
     );
   }
 
@@ -119,6 +128,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (!mounted) return;
 
+    // Use a local navigator context if available, otherwise use the root.
+    final navigator = Navigator.of(context);
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -128,7 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(context).pushAndRemoveUntil(
+              navigator.pushAndRemoveUntil(
                 MaterialPageRoute(builder: (context) => const InitialHubScreen()),
                 (route) => false,
               );
@@ -141,18 +153,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _checkIfKicked() async {
-    if (_currentHub == null || !mounted) return;
-
+    if (_currentHub == null || !mounted || _isLeaving) return;
     try {
       final member = await _supabaseService.getMemberInfo(_currentHub!.id);
       if (member == null && mounted) {
         _handleMemberKicked();
       }
     } catch (e) {
-      debugPrint("Error during periodic kick check: $e");
+      if (e is! ClientException) {
+        debugPrint("Error during periodic kick check: $e");
+      }
     }
   }
 
+  // ✅ --- (تعديل: إضافة تحقق من متغير المغادرة) ---
   void _setupRealtimeListeners(String hubId) {
     _hubMembersSubscription?.cancel();
     _hubSubscription?.cancel();
@@ -160,8 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _hubMembersSubscription =
         _supabaseService.getHubMembersStream(hubId).listen((membersList) {
-      if (!mounted) return;
-
+      if (!mounted || _isLeaving) return; // تجاهل التحديثات إذا كان المستخدم يغادر
       final currentUserStillAMember = membersList
           .any((m) => m['user_id'] == _supabaseService.currentUserId);
 
@@ -179,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _hubSubscription = _supabaseService.getHubStream(hubId).listen((hub) {
-      if (!mounted) return;
+      if (!mounted || _isLeaving) return; // تجاهل التحديثات
       if (hub == null) {
         _handleHubDeleted();
       } else {
@@ -205,104 +218,131 @@ class _HomeScreenState extends State<HomeScreen> {
   void _editProject(Project project) {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AddEditProjectDialog(
         project: project,
         onProjectSaved: (isNew) async {
+          _sidebarKey.currentState?.refreshProjects();
           final projects = await _supabaseService.getProjects();
-          setState(() {
-            _selectedProject = projects.firstWhere((p) => p.id == project.id,
-                orElse: () => project);
-          });
+          if (mounted) {
+            setState(() {
+              _selectedProject = projects.firstWhere((p) => p.id == project.id,
+                  orElse: () => project);
+            });
+          }
         },
       ),
     );
   }
+  
+  void _refreshAll() {
+    _sidebarKey.currentState?.refreshProjects();
+    _bugTrackerKey.currentState?.refreshBugs();
+    showSuccessDialog(context, 'تم تحديث البيانات بنجاح!');
+  }
 
-  Future<void> _confirmAndLeaveHub() async {
+  // ✅ --- (تعديل: إضافة متغير المغادرة وإعادة هيكلة) ---
+  Future<void> _leaveHub() async {
+    if (_myMembership == null) return;
+
     final confirm = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('تأكيد المغادرة'),
-        content: const Text(
-            'هل أنت متأكد من رغبتك في مغادرة هذا الـ Hub؟ ستحتاج إلى رمز سري جديد للانضمام مرة أخرى.'),
+        content: const Text('هل أنت متأكد من رغبتك في مغادرة الفريق؟'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('مغادرة', style: TextStyle(color: Colors.red)),
+            child: const Text('مغادرة', style: TextStyle(color: Colors.orange)),
           ),
         ],
       ),
     );
 
-    if (confirm == true && _myMembership != null) {
+    if (confirm == true && mounted) {
+      setState(() {
+        _isLeaving = true; // تفعيل متغير المغادرة لمنع الـ race condition
+      });
+
       try {
         await _supabaseService.leaveHub(_myMembership!.id);
-        _cleanupAndNavigate(
-            title: 'لقد غادرت', content: 'لقد غادرت الـ Hub بنجاح.');
+        
+        // الانتقال بعد المغادرة الناجحة
+        if (mounted) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('hub_setup_complete', false);
+          
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => const InitialHubScreen()),
+            (route) => false,
+          );
+        }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('فشل في المغادرة: $e'),
-                backgroundColor: Colors.red),
-          );
+          showErrorDialog(context, 'فشل في مغادرة الفريق: ${e.toString()}');
+          // إعادة المتغير لوضعه الطبيعي عند الفشل
+          setState(() {
+            _isLeaving = false;
+          });
         }
       }
     }
   }
-  
+
   void _showHubInfo() {
     if (_currentHub == null) return;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('معلومات Hub: ${_currentHub!.name}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('الرمز السري لمشاركة الفريق:'),
-            const SizedBox(height: 8),
-            SelectableText(
-              _currentHub!.secretCode,
-              style:
-                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-          ],
-        ),
-        actions: [
-          if (_isLeader)
-            TextButton.icon(
-              icon: const Icon(Icons.admin_panel_settings_outlined),
-              label: const Text('إدارة الأعضاء'),
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) =>
-                            HubManagementScreen(hub: _currentHub!)));
-              },
-            ),
-          if (!_isLeader)
-            TextButton.icon(
-              icon: Icon(Icons.exit_to_app, color: Colors.red.shade400),
-              label: Text('مغادرة الـ Hub', style: TextStyle(color: Colors.red.shade400)),
-              onPressed: () {
-                Navigator.pop(context); 
-                _confirmAndLeaveHub();
-              },
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إغلاق'),
-          )
-        ],
-      ),
-    );
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+              title: Text('معلومات الفريق: ${_currentHub!.name}'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('الرمز السري لمشاركة الفريق:'),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    _currentHub!.secretCode,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
+              ),
+              actions: [
+                if (!_isLeader)
+                  TextButton.icon(
+                    icon: const Icon(Icons.exit_to_app, color: Colors.orange),
+                    label: const Text('مغادرة الفريق', style: TextStyle(color: Colors.orange)),
+                    onPressed: () {
+                      Navigator.pop(context); // Close the info dialog first
+                      _leaveHub();
+                    },
+                  ),
+                if (_isLeader)
+                  TextButton.icon(
+                    icon: const Icon(Icons.admin_panel_settings_outlined),
+                    label: const Text('إدارة الأعضاء'),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  HubManagementScreen(hub: _currentHub!)));
+                    },
+                  ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('إغلاق'),
+                )
+              ],
+            ));
   }
 
   @override
@@ -327,29 +367,27 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Text(_selectedProject?.name ?? _currentHub?.name ?? 'DevNest'),
         actions: [
-          // --- ✨ تعديل (1): إضافة زر تحديث يظهر عند اختيار مشروع --- ✨
           if (_selectedProject != null)
-            IconButton(
+             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: () {
-                _bugTrackerKey.currentState?.refreshBugs();
-              },
-              tooltip: 'تحديث قائمة الأخطاء',
+              onPressed: _refreshAll,
+              tooltip: 'تحديث الكل',
             ),
           if (_currentHub != null)
             IconButton(
               icon: const Icon(Icons.hub_outlined),
               onPressed: _showHubInfo,
-              tooltip: 'معلومات الـ Hub',
+              tooltip: 'معلومات الفريق',
             ),
           IconButton(
-            icon: const Icon(Icons.psychology_alt),
+            icon: const Icon(Icons.auto_awesome),
             onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
             tooltip: 'فتح المساعد الذكي',
           ),
         ],
       ),
       drawer: ProjectSidebar(
+        key: _sidebarKey,
         onProjectSelected: _onProjectSelected,
         selectedProject: _selectedProject,
         myMembership: _myMembership,
@@ -392,3 +430,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+

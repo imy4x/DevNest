@@ -1,3 +1,5 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:responsive_framework/responsive_framework.dart';
@@ -7,14 +9,40 @@ import 'package:google_fonts/google_fonts.dart';
 import 'config.dart';
 import 'screens/home_screen.dart';
 import 'screens/initial_hub_screen.dart';
+import 'services/notification_service.dart';
+import 'firebase_options.dart';
+// --- NEW: Background message handler must be a top-level function ---
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // If you're going to use other Firebase services in the background, like Firestore,
+  // make sure you call `initializeApp` before using other Firebase services.
+  await Firebase.initializeApp(
+  options: DefaultFirebaseOptions.currentPlatform,
+);
+
+  print("Handling a background message: ${message.messageId}");
+}
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // --- NEW: Initialize Firebase ---
+  await Firebase.initializeApp();
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
 
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
   );
+  await NotificationService().init();
+  // --- NEW: Initialize Notification Service AFTER Supabase ---
+  // This allows it to access the Supabase client if needed
+  if (Supabase.instance.client.auth.currentSession != null) {
+      await NotificationService().init();
+  }
+
 
   if (Supabase.instance.client.auth.currentSession == null) {
     await Supabase.instance.client.auth.signInAnonymously();
@@ -130,4 +158,3 @@ class DevNestApp extends StatelessWidget {
     );
   }
 }
-

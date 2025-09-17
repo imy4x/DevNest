@@ -1,52 +1,57 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:dio/dio.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
+import 'dart:io';
+
 import '../models/bug.dart';
 import '../models/project.dart';
-import '../models/hub_member.dart'; 
+import '../models/hub_member.dart';
 import '../services/supabase_service.dart';
+import '../services/github_service.dart';
 import '../widgets/bug_card.dart';
 import '../add_bug_dialog.dart';
-import '../widgets/app_dialogs.dart'; 
-import 'package:flutter_speed_dial/flutter_speed_dial.dart';
+import '../ai_audit_dialog.dart';
+import '../widgets/app_dialogs.dart';
 
 class BugTrackerView extends StatefulWidget {
   final Project project;
   final VoidCallback onEditProject;
-  final HubMember? myMembership; 
-  
+  final HubMember? myMembership;
+
   const BugTrackerView({
-    super.key, 
-    required this.project, 
+    super.key,
+    required this.project,
     required this.onEditProject,
-    required this.myMembership, 
+    required this.myMembership,
   });
 
   @override
   State<BugTrackerView> createState() => BugTrackerViewState();
 }
 
-class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProviderStateMixin {
+class BugTrackerViewState extends State<BugTrackerView> {
   final SupabaseService _supabaseService = SupabaseService();
+  final GitHubService _githubService = GitHubService();
   late Future<List<Bug>> _bugsFuture;
-  late TabController _tabController;
-  
-  final List<String> _statuses = ['مفتوح', 'قيد التنفيذ', 'تم الحل'];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: _statuses.length, vsync: this);
     refreshBugs();
   }
-  
-  Future<void> refreshBugs() async {
+
+  void refreshBugs() {
     if (mounted) {
       setState(() {
         _bugsFuture = _supabaseService.getBugsForProject(widget.project.id);
       });
     }
   }
-  
+
   @override
   void didUpdateWidget(covariant BugTrackerView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -55,25 +60,157 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
     }
   }
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
+  void _showAiAudit() {
+    final canAudit = widget.myMembership?.canUseAiAudit ?? false;
+    if (!canAudit) {
+      showPermissionDeniedDialog(context);
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AiAuditDialog(
+        project: widget.project,
+        onBugsAdded: refreshBugs,
+      ),
+    );
   }
 
-  List<Bug> _filterBugs(List<Bug> bugs, String status) {
-    return bugs.where((bug) => bug.status == status).toList();
-  }
+  Future<void> _downloadAndInstallFromGitHub() async {
+    if (widget.project.githubUrl == null || widget.project.githubUrl!.isEmpty) {
+      showErrorDialog(context, 'لم يتم ربط المشروع بمستودع GitHub.');
+      return;
+    }
 
-  Future<void> _launchUrl(String? urlString) async {
-    if (urlString != null) {
-      final uri = Uri.parse(urlString);
-      if (!await launchUrl(uri)) {
-        if(mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('تعذر فتح الرابط: $urlString')),
-          );
-        }
+    // ✅ طلب إذن تثبيت التطبيقات فقط (التخزين ما عاد ضروري)
+    final status = await Permission.requestInstallPackages.request();
+
+    if (status.isPermanentlyDenied) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('الإذن مطلوب'),
+            content: const Text(
+                'تم رفض إذن تثبيت التطبيقات بشكل دائم. الرجاء تفعيله يدوياً من إعدادات التطبيق للمتابعة.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('إلغاء')),
+              TextButton(
+                onPressed: () {
+                  openAppSettings();
+                  Navigator.pop(context);
+                },
+                child: const Text('فتح الإعدادات'),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!status.isGranted) {
+      if (mounted) {
+        showErrorDialog(
+            context, 'يجب الموافقة على إذن تثبيت التطبيقات لإكمال العملية.');
+      }
+      return;
+    }
+
+    final downloadNotifier = ValueNotifier<double?>(null);
+    final statusNotifier = ValueNotifier<String>('جاري جلب معلومات الإصدار...');
+    final releaseInfoNotifier = ValueNotifier<Map<String, String>>({});
+
+    // 📥 نافذة التقدم
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('تنزيل آخر إصدار'),
+        content: AnimatedBuilder(
+          animation: Listenable.merge(
+              [downloadNotifier, statusNotifier, releaseInfoNotifier]),
+          builder: (context, child) {
+            final progress = downloadNotifier.value;
+            final statusText = statusNotifier.value;
+            final releaseInfo = releaseInfoNotifier.value;
+
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (releaseInfo['releaseTag'] != null)
+                  Chip(
+                      label: Text(releaseInfo['releaseTag']!,
+                          style: const TextStyle(fontWeight: FontWeight.bold))),
+                const SizedBox(height: 8),
+                Text(statusText),
+                const SizedBox(height: 16),
+                LinearProgressIndicator(value: progress),
+                if (progress != null && progress > 0)
+                  Center(
+                      child: Text('${(progress * 100).toStringAsFixed(0)}%')),
+                if (releaseInfo['releaseBody'] != null &&
+                    releaseInfo['releaseBody']!.isNotEmpty) ...[
+                  const Divider(height: 24),
+                  const Text('ملاحظات الإصدار:',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.2),
+                    child: SingleChildScrollView(
+                        child: Text(releaseInfo['releaseBody']!)),
+                  ),
+                ]
+              ],
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إلغاء'),
+          ),
+        ],
+      ),
+    );
+
+    try {
+      final info = await _githubService
+          .getLatestReleaseAssetInfo(widget.project.githubUrl!);
+      final downloadUrl = info['downloadUrl']!;
+      final fileName = info['fileName']!;
+
+      releaseInfoNotifier.value = info;
+      statusNotifier.value = 'جاري تنزيل: $fileName';
+      downloadNotifier.value = 0.0;
+
+      // ✅ حفظ في مساحة خاصة بالتطبيق (لا تحتاج إذن تخزين)
+      final dir = await getApplicationDocumentsDirectory();
+      final savePath = '${dir.path}/$fileName';
+
+      await Dio().download(
+        downloadUrl,
+        savePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            downloadNotifier.value = received / total;
+          }
+        },
+      );
+
+      if (mounted) Navigator.of(context).pop();
+      await OpenFilex.open(savePath);
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        showErrorDialog(context,
+            'فشل تحميل التطبيق: ${e.toString().replaceFirst("Exception: ", "")}');
       }
     }
   }
@@ -81,7 +218,11 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
   @override
   Widget build(BuildContext context) {
     final bool canAddBugs = widget.myMembership?.canAddBugs ?? false;
-    final bool canManageProjects = widget.myMembership?.canManageProjects ?? false;
+    final bool canManageProjects =
+        widget.myMembership?.canManageProjects ?? false;
+    final bool canUseAiAudit = widget.myMembership?.canUseAiAudit ?? false;
+    final bool hasGithubUrl = widget.project.githubUrl != null &&
+        widget.project.githubUrl!.isNotEmpty;
 
     return Scaffold(
       body: Column(
@@ -91,59 +232,52 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(widget.project.description ?? 'لا يوجد وصف لهذا المشروع.', style: Theme.of(context).textTheme.bodyMedium),
+                Text(widget.project.description ?? 'لا يوجد وصف لهذا المشروع.',
+                    style: Theme.of(context).textTheme.bodyMedium),
               ],
             ),
           ),
-          TabBar(
-            controller: _tabController,
-            tabs: _statuses.map((status) => Tab(text: status)).toList(),
-          ),
+          const Divider(height: 1),
           Expanded(
-            // --- ✨ تعديل (1): تم حذف RefreshIndicator --- ✨
             child: FutureBuilder<List<Bug>>(
               future: _bugsFuture,
               builder: (context, snapshot) {
-                 if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (snapshot.hasError) {
-                  // --- ✨ تعديل (2): تبسيط واجهة الخطأ --- ✨
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('حدث خطأ: ${snapshot.error}'),
-                        const SizedBox(height: 16),
-                        ElevatedButton.icon(
-                          onPressed: refreshBugs,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('إعادة المحاولة'),
-                        ),
-                      ],
-                    ),
-                  );
+                  return Center(child: Text('حدث خطأ: ${snapshot.error}'));
                 }
                 if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                  // --- ✨ تعديل (3): تبسيط واجهة القائمة الفارغة --- ✨
                   return const Center(
                     child: Padding(
                       padding: EdgeInsets.all(16.0),
                       child: Text(
-                        'لا توجد أخطاء في هذا المشروع حاليًا.',
-                         textAlign: TextAlign.center,
+                        'لا توجد أخطاء في هذا المشروع حاليًا. عظيم!',
+                        textAlign: TextAlign.center,
                       ),
                     ),
                   );
                 }
 
                 final allBugs = snapshot.data!;
-                return TabBarView(
-                  controller: _tabController,
-                  children: _statuses.map((status) {
-                    final filteredBugs = _filterBugs(allBugs, status);
-                    return _buildBugList(filteredBugs, 'أخطاء بالحالة "$status"');
-                  }).toList(),
+                final inProgressBugs =
+                    allBugs.where((b) => b.status == 'جاري').toList();
+                final resolvedBugs =
+                    allBugs.where((b) => b.status == 'تم الحل').toList();
+
+                final groupedInProgress =
+                    groupBy<Bug, String>(inProgressBugs, (bug) => bug.type);
+
+                final criticalBugs = groupedInProgress['حرج'] ?? [];
+                final simpleBugs = groupedInProgress['بسيط'] ?? [];
+                final enhancementBugs = groupedInProgress['تحسين'] ?? [];
+
+                return _buildBugList(
+                  critical: criticalBugs,
+                  simple: simpleBugs,
+                  enhancements: enhancementBugs,
+                  resolved: resolvedBugs,
                 );
               },
             ),
@@ -156,70 +290,111 @@ class BugTrackerViewState extends State<BugTrackerView> with SingleTickerProvide
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
         children: [
-          SpeedDialChild(
-            child: const Icon(Icons.bug_report),
-            label: 'إضافة خطأ جديد',
-            onTap: () {
-              if (canAddBugs) {
-                showDialog(
-                  context: context,
-                  builder: (context) => AddBugDialog(
-                    projectId: widget.project.id,
-                    onBugAdded: refreshBugs,
-                  ),
-                );
-              } else {
-                showPermissionDeniedDialog(context);
-              }
-            },
-          ),
-          SpeedDialChild(
-            child: const Icon(Icons.edit),
-            label: 'تعديل تفاصيل المشروع',
-            onTap: () {
-              if (canManageProjects) {
-                widget.onEditProject();
-              } else {
-                showPermissionDeniedDialog(context);
-              }
-            },
-          ),
-          SpeedDialChild(
-            child: const Icon(Icons.download_for_offline),
-            label: 'تحميل آخر نسخة (APK)',
-            backgroundColor: Colors.teal,
-            onTap: () {
-              if (widget.project.apkDownloadUrl != null) {
-                _launchUrl(widget.project.apkDownloadUrl);
-              } else {
-                showInfoDialog(context, 'ملف غير موجود', 'لم يتم العثور على ملف APK في آخر إصدار للمشروع على GitHub.');
-              }
-            },
-          ),
+          if (canUseAiAudit)
+            SpeedDialChild(
+              child: const Icon(Icons.auto_fix_high),
+              label: 'فحص ذكي للكود',
+              backgroundColor: Colors.deepPurple,
+              onTap: _showAiAudit,
+            ),
+          if (canAddBugs)
+            SpeedDialChild(
+                child: const Icon(Icons.bug_report),
+                label: 'إضافة خطأ/تحسين يدوي',
+                onTap: () {
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => AddBugDialog(
+                      projectId: widget.project.id,
+                      onBugAdded: refreshBugs,
+                    ),
+                  );
+                }),
+          if (canManageProjects)
+            SpeedDialChild(
+              child: const Icon(Icons.edit),
+              label: 'تعديل تفاصيل المشروع',
+              onTap: widget.onEditProject,
+            ),
+          if (hasGithubUrl)
+            SpeedDialChild(
+              child: const Icon(Icons.download_for_offline),
+              label: 'تنزيل آخر إصدار من GitHub',
+              backgroundColor: Colors.teal,
+              onTap: _downloadAndInstallFromGitHub,
+            ),
         ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );
   }
 
-   Widget _buildBugList(List<Bug> bugs, String emptyListMessage) {
-    if (bugs.isEmpty) {
-      // --- ✨ تعديل (4): تبسيط واجهة القائمة الفارغة داخل التاب --- ✨
-      return Center(child: Text('لا توجد $emptyListMessage'));
+  Widget _buildBugList({
+    required List<Bug> critical,
+    required List<Bug> simple,
+    required List<Bug> enhancements,
+    required List<Bug> resolved,
+  }) {
+    if (critical.isEmpty &&
+        simple.isEmpty &&
+        enhancements.isEmpty &&
+        resolved.isEmpty) {
+      return const Center(
+        child: Text('لا توجد عناصر هنا'),
+      );
     }
-    return ListView.builder(
+
+    critical.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    simple.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    enhancements.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    resolved.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    return ListView(
       padding: const EdgeInsets.all(16.0),
-      itemCount: bugs.length,
-      itemBuilder: (context, index) {
-        return BugCard(
-          bug: bugs[index],
-          project: widget.project,
-          onStatusChanged: refreshBugs,
-          onDeleted: refreshBugs,
-          myMembership: widget.myMembership,
-        );
-      },
+      children: [
+        if (critical.isNotEmpty)
+          _buildExpansionTile('أخطاء حرجة (${critical.length})', critical,
+              Icons.error, Colors.red.shade300),
+        if (simple.isNotEmpty)
+          _buildExpansionTile('أخطاء بسيطة (${simple.length})', simple,
+              Icons.bug_report, Colors.orange.shade300),
+        if (enhancements.isNotEmpty)
+          _buildExpansionTile('تحسينات (${enhancements.length})', enhancements,
+              Icons.auto_awesome, Colors.blue.shade300),
+        if (resolved.isNotEmpty)
+          _buildExpansionTile('تم الحل (${resolved.length})', resolved,
+              Icons.check_circle, Colors.green.shade300,
+              initiallyExpanded: false),
+      ],
+    );
+  }
+
+  Widget _buildExpansionTile(
+      String title, List<Bug> bugs, IconData icon, Color color,
+      {bool initiallyExpanded = true}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        key: PageStorageKey(title),
+        initiallyExpanded: initiallyExpanded,
+        leading: Icon(icon, color: color),
+        title: Text(title,
+            style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+        children: bugs
+            .map((bug) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                  child: BugCard(
+                    project: widget.project,
+                    bug: bug,
+                    onStatusChanged: refreshBugs,
+                    onDeleted: refreshBugs,
+                    myMembership: widget.myMembership,
+                  ),
+                ))
+            .toList(),
+      ),
     );
   }
 }
-

@@ -1,28 +1,9 @@
 import 'package:flutter/material.dart';
 
-// ملف جديد لمركزة جميع نوافذ الحوار وتوحيد تصميمها
-
-/// يعرض نافذة حوار معلومات عامة
-void showInfoDialog(BuildContext context, String title, String content) {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text(title),
-      content: Text(content),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('حسنًا'),
-        ),
-      ],
-    ),
-  );
-}
-
-/// يعرض نافذة حوار خاصة بالنجاح
 void showSuccessDialog(BuildContext context, String content) {
   showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) => AlertDialog(
       title: const Text('نجاح'),
       content: Text(content),
@@ -37,11 +18,10 @@ void showSuccessDialog(BuildContext context, String content) {
   );
 }
 
-
-/// يعرض نافذة حوار خاصة بالأخطاء
 void showErrorDialog(BuildContext context, String content) {
   showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) => AlertDialog(
       title: const Text('حدث خطأ'),
       content: Text(content),
@@ -56,10 +36,10 @@ void showErrorDialog(BuildContext context, String content) {
   );
 }
 
-/// يعرض نافذة حوار لرفض الصلاحية
 void showPermissionDeniedDialog(BuildContext context) {
    showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) => AlertDialog(
       title: const Text('وصول مرفوض'),
       content: const Text('ليس لديك الصلاحية الكافية للقيام بهذا الإجراء. الرجاء التواصل مع قائد الـ Hub.'),
@@ -68,6 +48,24 @@ void showPermissionDeniedDialog(BuildContext context) {
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('فهمت'),
+        ),
+      ],
+    ),
+  );
+}
+
+void showTryAgainLaterDialog(BuildContext context) {
+  showDialog(
+    context: context,
+    barrierDismissible: false, 
+    builder: (context) => AlertDialog(
+      title: const Text('حدث خطأ'),
+      content: const Text('فشل الاتصال بالخدمة. الرجاء المحاولة مرة أخرى لاحقًا.'),
+      icon: Icon(Icons.cloud_off, color: Colors.orange.shade400, size: 32),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('حسنًا'),
         ),
       ],
     ),

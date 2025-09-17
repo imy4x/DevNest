@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/supabase_service.dart';
 import 'home_screen.dart';
+// --- إضافة: استيراد نوافذ الحوار ---
+import '../widgets/app_dialogs.dart';
 
 class InitialHubScreen extends StatefulWidget {
   const InitialHubScreen({super.key});
@@ -22,14 +24,6 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
     super.dispose();
   }
 
-  void _showError(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Colors.red),
-      );
-    }
-  }
-
   Future<void> _navigateToHome() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('hub_setup_complete', true);
@@ -45,6 +39,7 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
     final hubNameController = TextEditingController();
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('إنشاء Hub جديد'),
         content: TextField(
@@ -60,7 +55,7 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
           ElevatedButton(
             onPressed: () async {
               if (hubNameController.text.trim().isEmpty) {
-                _showError('الرجاء إدخال اسم للـ Hub');
+                showErrorDialog(context, 'الرجاء إدخال اسم للـ Hub');
                 return;
               }
               Navigator.pop(context);
@@ -71,7 +66,7 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
                 await _showHubCreatedDialog(hubNameController.text.trim(), secretCode);
                 await _navigateToHome();
               } catch (e) {
-                _showError('فشل إنشاء الـ Hub: $e');
+                 if(mounted) showErrorDialog(context, 'فشل إنشاء الـ Hub: $e');
               } finally {
                 if (mounted) setState(() => _isLoading = false);
               }
@@ -120,52 +115,69 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
   }
 
   void _showJoinHubDialog() {
-    final codeController = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('الانضمام إلى Hub'),
-        content: TextField(
-          controller: codeController,
-          decoration: const InputDecoration(labelText: 'الرمز السري للـ Hub'),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (codeController.text.trim().isEmpty) {
-                _showError('الرجاء إدخال الرمز السري');
-                return;
-              }
-              Navigator.pop(context);
-              setState(() => _isLoading = true);
-              try {
-                await _supabaseService.joinHub(
-                    codeController.text.trim(), _nameController.text.trim());
-                await _navigateToHome();
-              } catch (e) {
-                // --- ✨ تعديل: تحسين رسائل الخطأ لتكون أوضح للمستخدم ---
-                var errorMessage = e.toString().replaceFirst('Exception: ', '');
-                if (errorMessage.contains('Hub not found with this secret code')) {
-                  errorMessage = 'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
-                } else if (errorMessage.contains('You are already a member of this hub')) {
-                  errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
-                }
-                _showError('فشل الانضمام: $errorMessage');
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-            child: const Text('انضمام'),
-          ),
-        ],
+  final codeController = TextEditingController();
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => AlertDialog(
+      title: const Text('الانضمام إلى Hub'),
+      content: TextField(
+        controller: codeController,
+        decoration: const InputDecoration(labelText: 'الرمز السري للـ Hub'),
+        autofocus: true,
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () {
+            if (!context.mounted) return;
+            Navigator.pop(context);
+          },
+          child: const Text('إلغاء'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final code = codeController.text.trim();
+            if (code.isEmpty) {
+              if (!context.mounted) return;
+              showErrorDialog(context, 'الرجاء إدخال الرمز السري');
+              return;
+            }
+
+            // ✅ خلي رسالة التحميل تبان
+            if (!mounted) return;
+            setState(() => _isLoading = true);
+
+            try {
+              print("🔍 Trying to join hub with code: $code");
+              await _supabaseService.joinHub(code, _nameController.text.trim());
+              print("✅ Joined hub successfully!");
+
+              if (!mounted) return;
+              Navigator.pop(context); // Close dialog only if success
+              await _navigateToHome();
+            } catch (e, st) {
+              print("❌ JoinHub error: $e\n$st");
+              var errorMessage = e.toString().replaceFirst('Exception: ', '');
+              if (errorMessage.contains('Hub not found with this secret code')) {
+                errorMessage =
+                    'الرمز السري الذي أدخلته غير صحيح. الرجاء التأكد منه والمحاولة مرة أخرى.';
+              } else if (errorMessage
+                  .contains('You are already a member of this hub')) {
+                errorMessage = 'أنت بالفعل عضو في هذا الـ Hub.';
+              }
+              if (!context.mounted) return;
+              showErrorDialog(context, 'فشل الانضمام: $errorMessage');
+            } finally {
+              if (!mounted) return;
+              setState(() => _isLoading = false);
+            }
+          },
+          child: const Text('انضمام'),
+        ),
+      ],
+    ),
+  );
+}
 
   @override
   Widget build(BuildContext context) {

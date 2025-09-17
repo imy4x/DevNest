@@ -8,6 +8,7 @@ class Bug {
   final String status; // Open, In Progress, Resolved
   final String projectId;
   final DateTime createdAt;
+  final String? source; 
 
   Bug({
     required this.id,
@@ -17,6 +18,7 @@ class Bug {
     required this.status,
     required this.projectId,
     required this.createdAt,
+    this.source,
   });
 
   factory Bug.fromJson(Map<String, dynamic> json) {
@@ -28,6 +30,7 @@ class Bug {
       status: json['status'],
       projectId: json['project_id'],
       createdAt: DateTime.parse(json['created_at']),
+      source: json['source'],
     );
   }
 
@@ -40,6 +43,7 @@ class Bug {
       status: status ?? this.status,
       projectId: projectId,
       createdAt: createdAt,
+      source: source,
     );
   }
 }
