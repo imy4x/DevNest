@@ -11,41 +11,41 @@ import 'screens/home_screen.dart';
 import 'screens/initial_hub_screen.dart';
 import 'services/notification_service.dart';
 import 'firebase_options.dart';
-// --- NEW: Background message handler must be a top-level function ---
+
+// --- إضافة: معالج رسائل الخلفية يجب أن يكون دالة على مستوى الملف ---
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // If you're going to use other Firebase services in the background, like Firestore,
-  // make sure you call `initializeApp` before using other Firebase services.
+  // إذا كنت ستستخدم خدمات Firebase أخرى في الخلفية، مثل Firestore،
+  // تأكد من استدعاء `initializeApp` قبل استخدامها.
   await Firebase.initializeApp(
-  options: DefaultFirebaseOptions.currentPlatform,
-);
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   print("Handling a background message: ${message.messageId}");
 }
 
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // --- NEW: Initialize Firebase ---
-  await Firebase.initializeApp();
+  // --- تعديل: تهيئة Firebase أولاً ---
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
 
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
   );
-  await NotificationService().init();
-  // --- NEW: Initialize Notification Service AFTER Supabase ---
-  // This allows it to access the Supabase client if needed
-  if (Supabase.instance.client.auth.currentSession != null) {
-      await NotificationService().init();
-  }
-
 
   if (Supabase.instance.client.auth.currentSession == null) {
     await Supabase.instance.client.auth.signInAnonymously();
+  }
+
+  // --- تعديل: تهيئة خدمة الإشعارات بعد Supabase والتأكد من وجود جلسة ---
+  // هذا يضمن أن الخدمة يمكنها الوصول إلى معرف المستخدم عند حفظ التوكن.
+  if (Supabase.instance.client.auth.currentSession != null) {
+    await NotificationService().init();
   }
 
   final prefs = await SharedPreferences.getInstance();

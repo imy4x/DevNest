@@ -48,11 +48,11 @@ class NotificationService {
   );
 
   if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-    print('User granted permission');
+    debugPrint('User granted notification permission');
   } else if (settings.authorizationStatus == AuthorizationStatus.provisional) {
-    print('User granted provisional permission');
+    debugPrint('User granted provisional notification permission');
   } else {
-    print('User declined or has not accepted permission');
+    debugPrint('User declined or has not accepted notification permission');
   }
 }
 
@@ -61,11 +61,13 @@ class NotificationService {
     try {
       final token = await _firebaseMessaging.getToken();
       if (token != null) {
-        print("FCM Token: $token");
+        debugPrint("FCM Token: $token");
         await _supabaseService.saveDeviceToken(token);
+      } else {
+        debugPrint("FCM Token is null.");
       }
     } catch (e) {
-      print("Failed to get FCM token: $e");
+      debugPrint("Failed to get FCM token: $e");
     }
   }
 
@@ -158,7 +160,7 @@ class NotificationService {
 }
 
   void _handleMessageOpened(RemoteMessage message) {
-    print("Notification tapped with data: ${message.data}");
+    debugPrint("Notification tapped with data: ${message.data}");
     // Here you can navigate to a specific screen based on message.data
   }
 }
