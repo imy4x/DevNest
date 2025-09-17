@@ -67,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _hubLoadState = HubLoadState.loading;
     });
 
+    Exception? lastError;
     for (int i = 0; i < retries; i++) {
       try {
         final hub = await _supabaseService.getHubForUser();
@@ -79,10 +80,11 @@ class _HomeScreenState extends State<HomeScreen> {
               _hubLoadState = HubLoadState.loaded;
             });
             _setupRealtimeListeners(hub.id);
-            return;
+            return; // Success, exit the function
           }
         }
       } catch (e) {
+        lastError = e as Exception;
         debugPrint('Error loading hub info (attempt ${i + 1}): $e');
       }
 
@@ -91,12 +93,41 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    if (mounted) {
+    // This block only runs if all retries have failed
+    if (mounted && _hubLoadState != HubLoadState.loaded) {
       setState(() {
         _hubLoadState = HubLoadState.error;
       });
-      _handleHubDeleted();
+
+      // Check the type of the last error encountered
+      if (lastError is ClientException) {
+        _handleNetworkError();
+      } else {
+        // For other errors (Postgrest, data not found, etc.), assume the hub is gone.
+        _handleHubDeleted();
+      }
     }
+  }
+
+  void _handleNetworkError() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('خطأ في الاتصال'),
+        content: const Text('تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _loadHubInfoWithRetry(); // Call the retry logic again
+            },
+            child: const Text('إعادة المحاولة'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleMemberKicked() {
@@ -430,4 +461,3 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
-
