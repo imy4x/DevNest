@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:archive/archive.dart';
-import 'package:flutter/foundation.dart'; 
+import 'package:flutter/foundation.dart';
 import 'dart:math';
 
 // Helper function for retry logic with exponential backoff
@@ -33,7 +33,40 @@ Future<T> _retry<T>(Future<T> Function() operation) async {
   throw Exception('Failed after multiple retries');
 }
 
-// Function to be run in a separate isolate to avoid UI freezing
+// --- START OF CHANGE ---
+
+/// ✅ (دالة جديدة) تعمل في isolate لتحليل ملف ZIP وإرجاع الملفات على هيئة Map
+Map<String, String> _parseZipAndExtractFilesToMap(List<int> zipBytes) {
+  final archive = ZipDecoder().decodeBytes(zipBytes);
+  final filesMap = <String, String>{};
+
+  const allowedExtensions = {
+    '.dart', '.yaml', '.json', '.md', '.txt', '.xml', '.gradle',
+    '.properties', '.html', '.css', '.js', 'Dockerfile', '.gitignore',
+  };
+
+  for (final file in archive) {
+    if (file.isFile &&
+        allowedExtensions.any((ext) => file.name.endsWith(ext))) {
+      final pathParts = file.name.split('/');
+      if (pathParts.length < 2) continue;
+
+      final cleanPath = pathParts.sublist(1).join('/');
+      if (cleanPath.isEmpty) continue;
+
+      try {
+        final content = utf8.decode(file.content as List<int>, allowMalformed: true);
+        filesMap[cleanPath] = content;
+      } catch (e) {
+        debugPrint('Could not decode file: $cleanPath');
+      }
+    }
+  }
+
+  return filesMap;
+}
+
+/// (الدالة الحالية) لتحليل ZIP وإرجاع الملفات كنص واحد
 String _parseZipAndExtractCode(List<int> zipBytes) {
   final archive = ZipDecoder().decodeBytes(zipBytes);
   final codeBuffer = StringBuffer();
@@ -70,8 +103,53 @@ String _parseZipAndExtractCode(List<int> zipBytes) {
   return codeBuffer.toString();
 }
 
+// --- END OF CHANGE ---
+
+
 class GitHubService {
   
+  // --- START OF CHANGE ---
+
+  /// ✅ (دالة جديدة) تجلب ملفات المستودع وتعيدها على هيئة Map<String, String>
+  /// مناسبة للتحليل الذكي الذي يتطلب معرفة مسارات الملفات.
+  Future<Map<String, String>> fetchRepositoryFilesAsMap(String repoUrl) async {
+    final uri = Uri.parse(repoUrl.replaceAll('.git', ''));
+    if (uri.pathSegments.length < 2) {
+      throw Exception(
+          'رابط مستودع GitHub غير صالح. يجب أن يكون بالصيغة: https://github.com/user/repo');
+    }
+    final repoPath = uri.pathSegments.take(2).join('/');
+    final zipballUrl = 'https://api.github.com/repos/$repoPath/zipball/main';
+
+    try {
+      final http.Response response = await _retry(() async {
+        final mainResponse = await http.get(Uri.parse(zipballUrl));
+        if (mainResponse.statusCode == 200) {
+          return mainResponse;
+        }
+        
+        debugPrint('Branch "main" not found, trying "master"...');
+        final masterZipballUrl = 'https://api.github.com/repos/$repoPath/zipball/master';
+        final masterResponse = await http.get(Uri.parse(masterZipballUrl));
+        
+        if (masterResponse.statusCode == 200) {
+          return masterResponse;
+        }
+
+        throw http.ClientException(
+          'فشل تحميل المستودع (رمز الخطأ: ${masterResponse.statusCode}). تأكد من أن المستودع عام وأن الفرع الرئيسي هو main أو master.',
+          masterResponse.request?.url,
+        );
+      });
+
+      // استخدام الدالة الجديدة التي تعيد Map في isolate
+      return await compute(_parseZipAndExtractFilesToMap, response.bodyBytes);
+    } catch (e) {
+      throw Exception('حدث خطأ غير متوقع: $e');
+    }
+  }
+  // --- END OF CHANGE ---
+
   Future<String> fetchRepositoryCodeAsString(String repoUrl) async {
     final uri = Uri.parse(repoUrl.replaceAll('.git', ''));
     if (uri.pathSegments.length < 2) {

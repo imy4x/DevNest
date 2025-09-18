@@ -41,6 +41,7 @@ class _AiAuditDialogState extends State<AiAuditDialog> {
   String _auditType = 'bugs'; // 'bugs' or 'enhancements'
   String _state = 'idle'; // idle, loading_code, auditing, results, error
   String? _errorMessage;
+  String _statusMessage = '';
   List<AuditResult> _results = [];
 
   final GeminiService _geminiService = GeminiService();
@@ -57,20 +58,32 @@ class _AiAuditDialogState extends State<AiAuditDialog> {
       return;
     }
 
-    setState(() => _state = 'loading_code');
+    setState(() {
+      _state = 'loading_code';
+       _statusMessage = 'جاري تحميل الكود من GitHub...';
+    });
     try {
       final codeContext =
           await _githubService.fetchRepositoryCodeAsString(widget.project.githubUrl!);
 
-      setState(() => _state = 'auditing');
+      setState(() {
+        _state = 'auditing';
+        _statusMessage = 'الذكاء الاصطناعي يقوم بالفحص الآن...';
+      });
       
       final List<Bug> existingBugs = 
           await _supabaseService.getBugsForProject(widget.project.id);
-
+      
+      // ✅ --- (مُعدَّل) الآن يمرر دالة callback لتحديث الواجهة ---
       final jsonResponse = await _geminiService.performCodeAudit(
         codeContext: codeContext,
         auditType: _auditType,
         existingBugs: existingBugs,
+        onStatusUpdate: (message) {
+          if (mounted) {
+            setState(() => _statusMessage = message);
+          }
+        },
       );
 
       final List<dynamic> decodedJson = jsonDecode(jsonResponse);
@@ -81,15 +94,16 @@ class _AiAuditDialogState extends State<AiAuditDialog> {
       });
     } catch (e) {
       if (mounted) {
-        showTryAgainLaterDialog(context);
-        setState(() {
-           _state = 'idle';
-        });
+        if (e is AllApiKeysFailedException) {
+            showServiceUnavailableDialog(context, e.message);
+        } else {
+            showTryAgainLaterDialog(context);
+        }
+        setState(() => _state = 'idle');
       }
     }
   }
 
-  // ✅ --- (تعديل: إضافة مصدر الخطأ عند الإضافة) ---
   Future<void> _addResultToBugs(AuditResult result) async {
     try {
       final bugData = {
@@ -98,13 +112,13 @@ class _AiAuditDialogState extends State<AiAuditDialog> {
         'type': result.type,
         'project_id': widget.project.id,
         'status': 'جاري',
-        'source': 'ai', // تحديد المصدر هنا
+        'source': 'ai',
       };
       await _supabaseService.addBug(bugData);
       setState(() {
         result.isAdded = true;
       });
-      widget.onBugsAdded(); // لتحديث القائمة الرئيسية
+      widget.onBugsAdded(); 
     } catch (e) {
       if (mounted) {
         showErrorDialog(context, 'فشل إضافة العنصر: $e');
@@ -130,29 +144,20 @@ class _AiAuditDialogState extends State<AiAuditDialog> {
     );
   }
 
+  /// ✅ --- (مُعدَّل) الآن يعرض رسائل الحالة للمستخدم ---
   Widget _buildContent() {
     switch (_state) {
       case 'idle':
         return _buildIdleView();
       case 'loading_code':
-        return const Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('جاري تحميل الكود من GitHub...'),
-            ],
-          ),
-        );
       case 'auditing':
-        return const Center(
+        return Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('الذكاء الاصطناعي يقوم بتحليل الكود الآن...'),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(_statusMessage, textAlign: TextAlign.center),
             ],
           ),
         );

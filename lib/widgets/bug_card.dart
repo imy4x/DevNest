@@ -1,10 +1,7 @@
-import 'dart:math';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:share_plus/share_plus.dart';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import '../widgets/edit_bug_dialog.dart';
 import '../models/bug.dart';
 import '../models/hub_member.dart';
@@ -86,23 +83,22 @@ class BugCard extends StatelessWidget {
               const SizedBox(height: 8),
               SelectableText(bug.description),
               const Divider(height: 24),
-              _buildDetailRow(context, 'الحالة:', 
+              _buildDetailRow(context, 'الحالة:',
                 Chip(
                   label: Text(bug.status, style: TextStyle(color: _getStatusColor(bug.status), fontWeight: FontWeight.bold)),
                   backgroundColor: _getStatusColor(bug.status).withOpacity(0.2),
                   side: BorderSide.none,
                 )
               ),
-              _buildDetailRow(context, 'النوع:', 
+              _buildDetailRow(context, 'النوع:',
                 Chip(
                   label: Text(bug.type),
                   backgroundColor: Theme.of(context).cardColor,
                   side: BorderSide.none,
                 ),
               ),
-               // ✅ --- (إضافة مصدر الخطأ في نافذة التفاصيل) ---
               if (bug.source != null)
-                _buildDetailRow(context, 'المصدر:', 
+                _buildDetailRow(context, 'المصدر:',
                   Chip(
                     avatar: Icon(bug.source == 'ai' ? Icons.auto_awesome : Icons.person, size: 16),
                     label: Text(bug.source == 'ai' ? 'مقترح AI' : 'يدوي'),
@@ -110,7 +106,7 @@ class BugCard extends StatelessWidget {
                     side: BorderSide.none,
                   ),
                 ),
-              _buildDetailRow(context, 'تاريخ الإنشاء:', 
+              _buildDetailRow(context, 'تاريخ الإنشاء:',
                 Text(_formatDateManually(bug.createdAt), style: TextStyle(color: Colors.grey.shade400)),
               ),
             ],
@@ -151,10 +147,8 @@ class BugCard extends StatelessWidget {
     final githubService = GitHubService();
     final geminiService = GeminiService();
     String analysisResult = '';
-    String analysisState = 'idle'; // idle, fetching, analyzing, done, error
-    String? errorMessage;
-    int retryCount = 0;
-    const maxRetries = 2;
+    String analysisState = 'loading'; // loading, done
+    String statusMessage = 'جاري التحضير...';
 
     showDialog(
       context: context,
@@ -162,31 +156,21 @@ class BugCard extends StatelessWidget {
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
+            
+            /// ✅ --- (مُعدَّل) الآن تستدعي الدالة التي تحلل كل الكود مباشرة ---
             Future<void> startAnalysis() async {
-              if (analysisState == 'analyzing' || analysisState == 'fetching') return;
-              
               try {
-                if (retryCount == 0) {
-                  setState(() => analysisState = 'fetching');
-                } else {
-                  setState(() {
-                    analysisState = 'fetching'; 
-                    errorMessage = 'فشل الطلب. جاري إعادة المحاولة ($retryCount/$maxRetries)...';
-                  });
-                }
+                setState(() => statusMessage = 'جاري تحميل كل ملفات المشروع...');
                 
-                final codeContext = await githubService
-                    .fetchRepositoryCodeAsString(project.githubUrl!);
+                final codeContext = await githubService.fetchRepositoryCodeAsString(project.githubUrl!);
 
-                setState(() {
-                  analysisState = 'analyzing';
-                  errorMessage = null; 
-                });
-
-                final result = await geminiService.analyzeBugWithCodeContext(
+                final result = await geminiService.analyzeBugAndSuggestSnippetsFromAllFiles(
                   bug: bug,
                   project: project,
                   codeContext: codeContext,
+                  onStatusUpdate: (message) {
+                    if (context.mounted) setState(() => statusMessage = message);
+                  },
                 );
 
                 setState(() {
@@ -195,33 +179,35 @@ class BugCard extends StatelessWidget {
                 });
 
               } catch (e) {
-                if (retryCount < maxRetries) {
-                  retryCount++;
-                  await Future.delayed(const Duration(seconds: 4));
-                  if (context.mounted) {
-                    startAnalysis();
-                  }
-                } else {
-                  if(context.mounted) {
-                      Navigator.of(context).pop();
+                 if(context.mounted) {
+                    Navigator.of(context).pop();
+                    if (e is AllApiKeysFailedException) {
+                      showServiceUnavailableDialog(context, e.message);
+                    } else {
                       showTryAgainLaterDialog(context);
+                    }
                   }
-                }
               }
             }
 
-            if (analysisState == 'idle') {
-              WidgetsBinding.instance
-                  .addPostFrameCallback((_) => startAnalysis());
+            if (analysisState == 'loading' && statusMessage == 'جاري التحضير...') {
+              WidgetsBinding.instance.addPostFrameCallback((_) => startAnalysis());
             }
             
             if (analysisState == 'done') {
-               return _AiSolutionDialog(content: analysisResult);
+               return _AiSolutionDialog(rawContent: analysisResult);
             }
 
             return AlertDialog(
               title: const Text('فحص بالذكاء الاصطناعي'),
-              content: _buildLoadingContent(context, analysisState, errorMessage),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(statusMessage, textAlign: TextAlign.center),
+                ],
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
@@ -235,32 +221,106 @@ class BugCard extends StatelessWidget {
     );
   }
 
-  Widget _buildLoadingContent(BuildContext context, String state, String? error) {
-     switch (state) {
-      case 'fetching':
-      case 'idle':
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(error ?? 'جاري تحميل الكود من GitHub...'),
-            if (error == null)
-              const Text('قد تستغرق هذه العملية لحظات.', style: TextStyle(fontSize: 12)),
-          ],
-        );
-      case 'analyzing':
-        return const Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('الذكاء الاصطناعي يقوم بالتحليل الآن...'),
-          ],
-        );
-      default:
-        return const SizedBox.shrink();
+  /// ✅ --- (دالة جديدة) للتحقق من الحل عبر الذكاء الاصطناعي ---
+  void _verifyFix(BuildContext context) {
+    if (project.githubUrl == null || project.githubUrl!.isEmpty) {
+      showErrorDialog(context,
+          'لا يمكن التحقق من الحل. لم يتم ربط هذا المشروع بمستودع GitHub.');
+      return;
     }
+
+    final githubService = GitHubService();
+    final geminiService = GeminiService();
+    String statusMessage = 'جاري التحضير...';
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            Future<void> startVerification() async {
+              try {
+                setState(() => statusMessage = 'جاري تحميل كل ملفات المشروع...');
+                
+                final codeContext = await githubService.fetchRepositoryCodeAsString(project.githubUrl!);
+
+                final resultJson = await geminiService.verifyFixInCode(
+                  bug: bug,
+                  codeContext: codeContext,
+                  onStatusUpdate: (message) {
+                    if (context.mounted) setState(() => statusMessage = message);
+                  },
+                );
+
+                if (!context.mounted) return;
+                Navigator.of(context).pop(); // Close loading dialog
+
+                final resultData = jsonDecode(resultJson);
+                final bool isResolved = resultData['resolved'] ?? false;
+                final String reasoning = resultData['reasoning'] ?? 'لم يتم تقديم سبب.';
+
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Row(
+                      children: [
+                        Icon(
+                          isResolved ? Icons.check_circle_outline : Icons.highlight_off,
+                          color: isResolved ? Colors.green.shade400 : Colors.red.shade400,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(isResolved ? 'يبدو أنه تم الحل' : 'لم يتم الحل بعد'),
+                      ],
+                    ),
+                    content: Text(reasoning),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('حسناً'),
+                      ),
+                    ],
+                  ),
+                );
+
+              } catch (e) {
+                 if(context.mounted) {
+                    Navigator.of(context).pop();
+                    if (e is AllApiKeysFailedException) {
+                      showServiceUnavailableDialog(context, e.message);
+                    } else {
+                      showErrorDialog(context, 'حدث خطأ أثناء التحقق: $e');
+                    }
+                  }
+              }
+            }
+
+            // Run the analysis once when the dialog is first built
+            if (statusMessage == 'جاري التحضير...') {
+              WidgetsBinding.instance.addPostFrameCallback((_) => startVerification());
+            }
+            
+            return AlertDialog(
+              title: const Text('التحقق من الحل'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(statusMessage, textAlign: TextAlign.center),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('إلغاء'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _changeStatus(BuildContext context) async {
@@ -268,10 +328,8 @@ class BugCard extends StatelessWidget {
       showPermissionDeniedDialog(context);
       return;
     }
-
     final List<String> statuses = ['جاري', 'تم الحل'];
     statuses.remove(bug.status);
-
     final newStatus = await showDialog<String>(
       context: context,
       barrierDismissible: false,
@@ -287,7 +345,6 @@ class BugCard extends StatelessWidget {
         );
       },
     );
-
     if (newStatus != null) {
       try {
         await SupabaseService().updateBugStatus(bug.id, newStatus);
@@ -320,7 +377,6 @@ class BugCard extends StatelessWidget {
       showPermissionDeniedDialog(context);
       return;
     }
-
     final confirm = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -338,7 +394,6 @@ class BugCard extends StatelessWidget {
         ],
       ),
     );
-
     if (confirm == true) {
       try {
         await SupabaseService().deleteBug(bug.id);
@@ -400,7 +455,7 @@ class BugCard extends StatelessWidget {
                             items.add(const PopupMenuItem(value: 'status', child: Text('تغيير الحالة')));
                              items.add(const PopupMenuDivider());
                           }
-                          
+
                           items.add(const PopupMenuItem(
                                   value: 'delete',
                                   child: Text('حذف', style: TextStyle(color: Colors.red))));
@@ -438,11 +493,10 @@ class BugCard extends StatelessWidget {
                             fontWeight: FontWeight.bold)),
                   ),
                   const Spacer(),
-                  // ✅ --- (إضافة أيقونة لتوضيح مصدر الخطأ) ---
                   if (bug.source != null)
                     Tooltip(
-                      message: bug.source == 'ai' 
-                          ? 'تمت إضافته بواسطة الذكاء الاصطناعي' 
+                      message: bug.source == 'ai'
+                          ? 'تمت إضافته بواسطة الذكاء الاصطناعي'
                           : 'تمت إضافته يدويًا',
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8.0),
@@ -464,7 +518,7 @@ class BugCard extends StatelessWidget {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                    icon: const Icon(Icons.auto_fix_high_outlined, size: 18),
                     label: const Text('فحص بالذكاء الاصطناعي'),
                     onPressed: () => _showAiSuggestion(context),
                     style: OutlinedButton.styleFrom(
@@ -472,7 +526,19 @@ class BugCard extends StatelessWidget {
                             color:
                                 Theme.of(context).primaryColor.withOpacity(0.5))),
                   ),
-                )
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.task_alt_outlined, size: 18),
+                    label: const Text('التحقق من الحل آلياً'),
+                    onPressed: () => _verifyFix(context),
+                    style: OutlinedButton.styleFrom(
+                        side: BorderSide(
+                            color: Colors.cyan.withOpacity(0.5))),
+                  ),
+                ),
               ]
             ],
           ),
@@ -482,63 +548,95 @@ class BugCard extends StatelessWidget {
   }
 }
 
+/// ✅ --- (مُعدَّل) نافذة عرض الحل مع معالجة أفضل للأخطاء ---
 class _AiSolutionDialog extends StatelessWidget {
-  final String content;
+  final String rawContent;
 
-  const _AiSolutionDialog({required this.content});
+  const _AiSolutionDialog({required this.rawContent});
+
+  Map<String, dynamic> _parseSolution() {
+    const startDelimiter = '--- CODE CHANGES START ---';
+    const endDelimiter = '--- CODE CHANGES END ---';
+
+    final startIndex = rawContent.indexOf(startDelimiter);
+    final endIndex = rawContent.indexOf(endDelimiter, startIndex);
+
+    if (startIndex == -1 || endIndex == -1) {
+      return {'explanation': rawContent, 'changes': [], 'error': null};
+    }
+
+    final explanation = rawContent.substring(0, startIndex).trim();
+    final jsonString = rawContent
+        .substring(startIndex + startDelimiter.length, endIndex)
+        .trim();
+
+    try {
+      final changes = jsonDecode(jsonString);
+      return {'explanation': explanation, 'changes': changes, 'error': null};
+    } catch (e) {
+      print('Error parsing AI solution JSON: $e');
+      // Return the explanation and the raw JSON string as an error
+      return {
+        'explanation': explanation,
+        'changes': [],
+        'error': jsonString,
+      };
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final String explanation;
-    final Map<String, String> files = {};
-
-    final fileRegex = RegExp(r'--- START FILE: (.*?) ---\s*(.*?)\s*--- END FILE ---', dotAll: true);
-    final firstMatch = fileRegex.firstMatch(content);
-
-    if (firstMatch == null) {
-      explanation = content.trim();
-    } else {
-      explanation = content.substring(0, firstMatch.start).trim();
-      final matches = fileRegex.allMatches(content);
-      for (final match in matches) {
-        final path = match.group(1)?.trim();
-        final code = match.group(2)?.trim();
-        if (path != null && code != null && path.isNotEmpty) {
-          files[path] = code;
-        }
-      }
-    }
-
-    final List<Tab> tabs = [const Tab(icon: Icon(Icons.description_outlined), text: 'الشرح')];
-    final List<Widget> tabViews = [
-      SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: MarkdownBody(data: explanation.isEmpty ? 'لم يتم تقديم شرح.' : explanation, selectable: true),
-      ),
-    ];
-
-    files.forEach((path, code) {
-      tabs.add(Tab(text: path));
-      tabViews.add(_SingleFileView(filePath: path, codeContent: code));
-    });
+    final solution = _parseSolution();
+    final String explanation = solution['explanation'];
+    final List<dynamic> changes = solution['changes'];
+    final String? errorJson = solution['error'];
 
     return AlertDialog(
       title: const Text('اقتراح الحل'),
       contentPadding: EdgeInsets.zero,
+      insetPadding: const EdgeInsets.all(16),
       content: SizedBox(
-        width: MediaQuery.of(context).size.width * 0.9,
+        width: MediaQuery.of(context).size.width,
         height: MediaQuery.of(context).size.height * 0.75,
         child: DefaultTabController(
-          length: tabs.length,
+          length: 2,
           child: Column(
             children: [
-              TabBar(
-                isScrollable: true,
-                tabs: tabs,
+              const TabBar(
+                tabs: [
+                  Tab(icon: Icon(Icons.description_outlined), text: 'الشرح'),
+                  Tab(icon: Icon(Icons.code_outlined), text: 'الأكواد المقترحة'),
+                ],
               ),
               Expanded(
                 child: TabBarView(
-                  children: tabViews,
+                  children: [
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(16.0),
+                      child: MarkdownBody(
+                        data: explanation.isEmpty
+                            ? 'لم يتم تقديم شرح.'
+                            : explanation,
+                        selectable: true,
+                      ),
+                    ),
+                    errorJson != null
+                        ? _buildErrorView(errorJson)
+                        : (changes.isEmpty
+                            ? const Center(child: Text('لا توجد تعديلات كود مقترحة.'))
+                            : ListView.builder(
+                                padding: const EdgeInsets.all(12),
+                                itemCount: changes.length,
+                                itemBuilder: (context, index) {
+                                  final change = changes[index];
+                                  return _CodeModificationCard(
+                                    filePath: change['file_path'] ?? 'N/A',
+                                    description: change['description'] ?? 'N/A',
+                                    codeSnippet: change['code_snippet'] ?? 'N/A',
+                                  );
+                                },
+                              )),
+                  ],
                 ),
               ),
             ],
@@ -553,82 +651,137 @@ class _AiSolutionDialog extends StatelessWidget {
       ],
     );
   }
-}
 
-class _SingleFileView extends StatelessWidget {
-  final String filePath;
-  final String codeContent;
-
-  const _SingleFileView({required this.filePath, required this.codeContent});
-
-  Future<void> _shareFile(BuildContext context) async {
-    try {
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/${filePath.split('/').last}.txt');
-      await file.writeAsString(codeContent);
-      await Share.shareXFiles([XFile(file.path)], subject: 'مشاركة ملف: $filePath');
-    } catch (e) {
-      if(context.mounted) showErrorDialog(context, 'فشل مشاركة الملف: $e');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          color: Theme.of(context).cardColor,
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  filePath,
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.copy_all_outlined, size: 18),
-                tooltip: 'نسخ الكود',
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: codeContent));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم نسخ الكود بنجاح!')),
-                  );
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.share_outlined, size: 18),
-                tooltip: 'مشاركة الملف',
-                onPressed: () => _shareFile(context),
-              )
-            ],
-          ),
-        ),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Directionality(
-              textDirection: TextDirection.ltr,
-              child: SingleChildScrollView(
-                child: MarkdownBody(
-                  data: '```dart\n$codeContent\n```',
-                  selectable: true,
-                  styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                    code: const TextStyle(fontFamily: 'monospace', fontSize: 14.0),
-                    codeblockDecoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                    ),
-                  ),
-                ),
-              ),
+  Widget _buildErrorView(String errorJson) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'فشل تحليل مقترحات الكود',
+            style: TextStyle(
+              color: Colors.red.shade300,
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
             ),
           ),
-        )
-      ],
+          const SizedBox(height: 8),
+          const Text(
+            'لم يتمكن التطبيق من فهم تنسيق الكود الذي أرسله الذكاء الاصطناعي. هذا هو النص الخام الذي تم استلامه:',
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade700),
+            ),
+            child: SelectableText(
+              errorJson.isEmpty ? '(تم استلام نص فارغ)' : errorJson,
+              style: const TextStyle(fontFamily: 'monospace', color: Colors.yellow),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
+class _CodeModificationCard extends StatelessWidget {
+  final String filePath;
+  final String description;
+  final String codeSnippet;
+
+  const _CodeModificationCard({
+    required this.filePath,
+    required this.description,
+    required this.codeSnippet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.withOpacity(0.2)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.grey.shade800
+                : Colors.grey.shade200,
+            child: Text(
+              filePath,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.blue.shade300, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(description)),
+                  ],
+                ),
+                const Divider(height: 24),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Directionality(
+                        textDirection: TextDirection.ltr,
+                        child: SelectableText(
+                          codeSnippet,
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 13),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.copy_all_outlined, size: 16),
+                          label: const Text('نسخ الكود'),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: codeSnippet));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('تم نسخ مقتطف الكود بنجاح!'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
