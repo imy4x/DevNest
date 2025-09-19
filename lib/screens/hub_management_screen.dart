@@ -5,8 +5,6 @@ import '../models/hub_member.dart';
 import '../services/supabase_service.dart';
 import '../widgets/app_dialogs.dart';
 import 'initial_hub_screen.dart';
-import '../services/notification_service.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class HubManagementScreen extends StatefulWidget {
   final Hub hub;
@@ -18,10 +16,9 @@ class HubManagementScreen extends StatefulWidget {
 
 class _HubManagementScreenState extends State<HubManagementScreen> {
   final SupabaseService _supabaseService = SupabaseService();
-  late Future<List<HubMember>> _membersFuture;
+  late Stream<List<Map<String, dynamic>>> _membersStream;
   bool _isDeletingHub = false;
 
-  // --- NEW: For broadcast message ---
   final _broadcastController = TextEditingController();
   final _broadcastFormKey = GlobalKey<FormState>();
   bool _isSendingBroadcast = false;
@@ -29,7 +26,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   @override
   void initState() {
     super.initState();
-    _refreshMembers();
+    _membersStream = _supabaseService.getHubMembersStream(widget.hub.id);
   }
 
   @override
@@ -38,50 +35,14 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     super.dispose();
   }
 
-  void _refreshMembers() {
-    setState(() {
-      _membersFuture = _supabaseService.getHubMembers(widget.hub.id);
-    });
-  }
-
-  Future<void> _sendTestNotification() async {
-    try {
-      final notificationService = NotificationService();
-      await notificationService.init(); // تأكد من تهيئة الـ NotificationService
-
-      const title = 'إشعار اختبار';
-      const body = 'هذا إشعار foreground للتجربة';
-
-      // استخدم الـ local notifications مباشرة
-      notificationService.localNotificationsPlugin.show(
-        0,
-        title,
-        body,
-        NotificationDetails(
-          android: AndroidNotificationDetails(
-            'high_importance_channel',
-            'High Importance Notifications',
-            channelDescription:
-                'This channel is used for important notifications.',
-            importance: Importance.max,
-            priority: Priority.high,
-            icon: '@mipmap/ic_launcher',
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        showErrorDialog(context, 'فشل إرسال إشعار الاختبار: $e');
-      }
-    }
-  }
-
   Future<void> _updatePermissions(HubMember member,
       {bool? canAdd,
       bool? canEdit,
       bool? canChat,
       bool? canAddProj,
-      bool? canAudit}) async {
+      bool? canAudit,
+      bool? canBroadcast, // --- إضافة: متغير صلاحية الإشعارات ---
+      }) async {
     try {
       await _supabaseService.updateMemberPermissions(
         memberId: member.id,
@@ -90,11 +51,12 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
         canUseChat: canChat ?? member.canUseChat,
         canManageProjects: canAddProj ?? member.canManageProjects,
         canUseAiAudit: canAudit ?? member.canUseAiAudit,
+        // --- إضافة: تمرير الصلاحية الجديدة ---
+        canSendBroadcasts: canBroadcast ?? member.canSendBroadcasts,
       );
       if (mounted) {
         showSuccessDialog(context, 'تم تحديث الصلاحيات بنجاح.');
       }
-      _refreshMembers();
     } catch (e) {
       if (mounted) {
         showErrorDialog(context, 'فشل تحديث الصلاحيات: $e');
@@ -105,71 +67,44 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   Future<void> _editDisplayName(HubMember member) async {
     final nameController = TextEditingController(text: member.displayName);
     final newName = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
+      context: context, barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('تعديل اسم العضو'),
-        content: TextField(
-          controller: nameController,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'أدخل الاسم الجديد'),
-        ),
+        content: TextField(controller: nameController, autofocus: true, decoration: const InputDecoration(hintText: 'أدخل الاسم الجديد')),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('إلغاء')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, nameController.text.trim()),
-            child: const Text('حفظ'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')),
+          FilledButton(onPressed: () => Navigator.pop(context, nameController.text.trim()), child: const Text('حفظ')),
         ],
       ),
     );
 
     if (newName != null && newName.isNotEmpty) {
       try {
-        await _supabaseService.updateMemberDisplayName(
-            memberId: member.id, newName: newName);
-        _refreshMembers();
+        await _supabaseService.updateMemberDisplayName(memberId: member.id, newName: newName);
       } catch (e) {
-        if (mounted) {
-          showErrorDialog(context, 'فشل تحديث الاسم: $e');
-        }
+        if (mounted) showErrorDialog(context, 'فشل تحديث الاسم: $e');
       }
     }
   }
 
   Future<void> _removeMember(HubMember member) async {
     final confirm = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
+        context: context, barrierDismissible: false,
         builder: (context) => AlertDialog(
               title: const Text('تأكيد الطرد'),
-              content: Text(
-                  'هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
+              content: Text('هل أنت متأكد من رغبتك في طرد "${member.displayName ?? 'هذا العضو'}"؟ سيتم تغيير الرمز السري للـ Hub بعد هذا الإجراء.'),
               actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('إلغاء')),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('طرد وتغيير الرمز',
-                      style: TextStyle(color: Colors.red)),
-                ),
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('طرد وتغيير الرمز', style: TextStyle(color: Colors.red))),
               ],
             ));
 
     if (confirm == true) {
       try {
         await _supabaseService.removeMember(member.id);
-        if (mounted) {
-          showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
-        }
-        _refreshMembers();
+        if (mounted) showSuccessDialog(context, 'تم طرد العضو وتحديث رمز الـ Hub بنجاح.');
       } catch (e) {
-        if (mounted) {
-          showErrorDialog(context, 'فشل طرد العضو: $e');
-        }
+        if (mounted) showErrorDialog(context, 'فشل طرد العضو: $e');
       }
     }
   }
@@ -177,49 +112,35 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
   Future<void> _deleteHub() async {
     final members = await _supabaseService.getHubMembers(widget.hub.id);
     if (members.length > 1) {
-      showErrorDialog(context,
-          'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
+      showErrorDialog(context, 'لا يمكنك حذف الـ Hub بوجود أعضاء آخرين. الرجاء طرد جميع الأعضاء أولاً.');
       return;
     }
 
     final hubNameController = TextEditingController();
     final confirm = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
+      context: context, barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text('حذف Hub "${widget.hub.name}"'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-                'هذا الإجراء نهائي ولا يمكن التراجع عنه. سيتم حذف جميع المشاريع والأخطاء والبيانات المرتبطة بهذا الـ Hub.'),
+            const Text('هذا الإجراء نهائي ولا يمكن التراجع عنه. سيتم حذف جميع المشاريع والأخطاء والبيانات المرتبطة بهذا الـ Hub.'),
             const SizedBox(height: 16),
-            Text('للتأكيد، الرجاء كتابة اسم الـ Hub: "${widget.hub.name}"'),
-            const SizedBox(height: 8),
-            TextField(
-              controller: hubNameController,
-              decoration: InputDecoration(
-                hintText: widget.hub.name,
-              ),
-            )
+            Text('للتأكيد، الرجاء كتابة اسم الـ Hub: "${widget.hub.name}"'), const SizedBox(height: 8),
+            TextField(controller: hubNameController, decoration: InputDecoration(hintText: widget.hub.name))
           ],
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
           ValueListenableBuilder<TextEditingValue>(
             valueListenable: hubNameController,
             builder: (context, value, child) {
               return FilledButton(
-                style: FilledButton.styleFrom(
-                    backgroundColor: Colors.red.shade700),
-                onPressed: value.text == widget.hub.name
-                    ? () => Navigator.pop(context, true)
-                    : null,
+                style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+                onPressed: value.text == widget.hub.name ? () => Navigator.pop(context, true) : null,
                 child: const Text('حذف نهائي'),
               );
-            },
+},
           ),
         ],
       ),
@@ -229,46 +150,32 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
       setState(() => _isDeletingHub = true);
       try {
         await _supabaseService.deleteHub(widget.hub.id);
-
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('hub_setup_complete', false);
-
         if (mounted) {
-          Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (context) => const InitialHubScreen()),
-              (route) => false);
+          Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (context) => const InitialHubScreen()), (route) => false);
         }
       } catch (e) {
-        if (mounted) {
-          showErrorDialog(context, 'فشل حذف الـ Hub: ${e.toString()}');
-        }
+        if (mounted) showErrorDialog(context, 'فشل حذف الـ Hub: ${e.toString()}');
       } finally {
-        if (mounted) {
-          setState(() => _isDeletingHub = false);
-        }
+        if (mounted) setState(() => _isDeletingHub = false);
       }
     }
   }
 
-  // --- NEW: Function to send broadcast message ---
   Future<void> _sendBroadcast() async {
     if (_broadcastFormKey.currentState?.validate() ?? false) {
       setState(() => _isSendingBroadcast = true);
       try {
-        await _supabaseService
-            .sendBroadcastNotification(_broadcastController.text.trim());
+        await _supabaseService.sendBroadcastNotification(_broadcastController.text.trim());
         if (mounted) {
           _broadcastController.clear();
           showSuccessDialog(context, 'تم إرسال الإشعار لجميع الأعضاء بنجاح.');
         }
       } catch (e) {
-        if (mounted) {
-          showErrorDialog(context, 'فشل إرسال الإشعار: $e');
-        }
+        if (mounted) showErrorDialog(context, 'فشل إرسال الإشعار: $e');
       } finally {
-        if (mounted) {
-          setState(() => _isSendingBroadcast = false);
-        }
+        if (mounted) setState(() => _isSendingBroadcast = false);
       }
     }
   }
@@ -280,168 +187,71 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
         title: Text('إدارة Hub "${widget.hub.name}"'),
       ),
       body: _isDeletingHub
-          ? const Center(
-              child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('جاري حذف الـ Hub...')
-              ],
-            ))
-          : FutureBuilder<List<HubMember>>(
-              future: _membersFuture,
+          ? const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [CircularProgressIndicator(), SizedBox(height: 16), Text('جاري حذف الـ Hub...')]))
+          : StreamBuilder<List<Map<String,dynamic>>>(
+              stream: _membersStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                if (snapshot.hasError) {
-                  return Center(child: Text('خطأ: ${snapshot.error}'));
-                }
-                if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                  return const Center(
-                      child: Text('لا يوجد أعضاء في هذا الـ Hub.'));
-                }
-
-                final members = snapshot.data!;
+                if (snapshot.hasError) return Center(child: Text('خطأ: ${snapshot.error}'));
+                if (!snapshot.hasData || snapshot.data!.isEmpty) return const Center(child: Text('لا يوجد أعضاء في هذا الـ Hub.'));
+                
+                final members = snapshot.data!.map((json) => HubMember.fromJson(json)).toList();
                 final currentUser = _supabaseService.currentUserId;
 
                 return ListView(
-                  // Changed to ListView to accommodate new sections
                   children: [
-                    _buildBroadcastCard(), // NEW card for leader
+                    _buildBroadcastCard(),
                     ...members.map((member) {
-                      // The existing list of members
                       final isLeader = member.role == 'leader';
                       final isCurrentUser = member.userId == currentUser;
-
                       return Card(
-                        margin: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
+                        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         child: Padding(
                           padding: const EdgeInsets.all(16.0),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Row(
                                           children: [
-                                            Expanded(
-                                              child: Text(
-                                                member.displayName ??
-                                                    'عضو غير مسمى',
-                                                style: const TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 16),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                            if (!isLeader)
-                                              IconButton(
-                                                icon: const Icon(
-                                                    Icons.edit_outlined,
-                                                    size: 18),
-                                                onPressed: () =>
-                                                    _editDisplayName(member),
-                                                tooltip: 'تعديل الاسم',
-                                              )
+                                            Expanded(child: Text(member.displayName ?? 'عضو غير مسمى', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis)),
+                                            if (!isLeader) IconButton(icon: const Icon(Icons.edit_outlined, size: 18), onPressed: () => _editDisplayName(member), tooltip: 'تعديل الاسم')
                                           ],
                                         ),
-                                        if (isLeader)
-                                          const Chip(
-                                            label: Text('قائد'),
-                                            backgroundColor: Colors.blueGrey,
-                                            padding: EdgeInsets.zero,
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          )
-                                        else if (isCurrentUser)
-                                          const Chip(
-                                            label: Text('أنت'),
-                                            backgroundColor: Colors.purple,
-                                            padding: EdgeInsets.zero,
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
+                                        if (isLeader) const Chip(label: Text('قائد'), backgroundColor: Colors.blueGrey, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)
+                                        else if (isCurrentUser) const Chip(label: Text('أنت'), backgroundColor: Colors.purple, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
                                       ],
                                     ),
                                   ),
-                                  if (!isLeader)
-                                    IconButton(
-                                      icon: const Icon(
-                                          Icons.person_remove_outlined),
-                                      color: Colors.orange.shade300,
-                                      tooltip: 'طرد العضو',
-                                      onPressed: () => _removeMember(member),
-                                    )
+                                  if (!isLeader) IconButton(icon: const Icon(Icons.person_remove_outlined), color: Colors.orange.shade300, tooltip: 'طرد العضو', onPressed: () => _removeMember(member))
                                 ],
                               ),
                               const Divider(),
+                              SwitchListTile(title: const Text('إدارة المشاريع'), value: member.canManageProjects, onChanged: isLeader ? null : (value) => _updatePermissions(member, canAddProj: value)),
+                              SwitchListTile(title: const Text('إضافة أخطاء'), value: member.canAddBugs, onChanged: isLeader ? null : (value) => _updatePermissions(member, canAdd: value)),
+                              SwitchListTile(title: const Text('تعديل الأخطاء'), value: member.canEditBugs, onChanged: isLeader ? null : (value) => _updatePermissions(member, canEdit: value)),
+                              SwitchListTile(title: const Text('استخدام المحادثة'), value: member.canUseChat, onChanged: isLeader ? null : (value) => _updatePermissions(member, canChat: value)),
+                              SwitchListTile(title: const Text('الفحص الذكي للكود'), value: member.canUseAiAudit, onChanged: isLeader ? null : (value) => _updatePermissions(member, canAudit: value)),
+                              // --- إضافة: مفتاح التحكم بصلاحية الإشعارات العامة ---
                               SwitchListTile(
-                                title:
-                                    const Text('إدارة المشاريع (إضافة/تعديل)'),
-                                value: member.canManageProjects,
-                                onChanged: isLeader
-                                    ? null
-                                    : (value) {
-                                        _updatePermissions(member,
-                                            canAddProj: value);
-                                      },
-                              ),
-                              SwitchListTile(
-                                title: const Text('السماح بإضافة أخطاء'),
-                                value: member.canAddBugs,
-                                onChanged: isLeader
-                                    ? null
-                                    : (value) {
-                                        _updatePermissions(member,
-                                            canAdd: value);
-                                      },
-                              ),
-                              SwitchListTile(
-                                title: const Text('السماح بتعديل الأخطاء'),
-                                value: member.canEditBugs,
-                                onChanged: isLeader
-                                    ? null
-                                    : (value) {
-                                        _updatePermissions(member,
-                                            canEdit: value);
-                                      },
-                              ),
-                              SwitchListTile(
-                                title: const Text('السماح باستخدام المحادثة'),
-                                value: member.canUseChat,
-                                onChanged: isLeader
-                                    ? null
-                                    : (value) {
-                                        _updatePermissions(member,
-                                            canChat: value);
-                                      },
-                              ),
-                              SwitchListTile(
-                                title: const Text('السماح بالفحص الذكي للكود'),
-                                value: member.canUseAiAudit,
-                                onChanged: isLeader
-                                    ? null
-                                    : (value) {
-                                        _updatePermissions(member,
-                                            canAudit: value);
-                                      },
+                                title: const Text('إرسال إشعارات عامة'),
+                                value: member.canSendBroadcasts,
+                                onChanged: isLeader ? null : (value) => _updatePermissions(member, canBroadcast: value),
                               ),
                             ],
                           ),
                         ),
                       );
                     }).toList(),
-                    _buildDangerZoneCard(), // The existing danger zone
+                    _buildDangerZoneCard(),
                   ],
                 );
               },
@@ -449,7 +259,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     );
   }
 
-  // --- NEW: Widget for the broadcast card ---
   Widget _buildBroadcastCard() {
     return Card(
       margin: const EdgeInsets.all(16),
@@ -461,66 +270,21 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('إشعار لجميع الأعضاء',
-                  style: Theme.of(context).textTheme.titleLarge),
+              Text('إشعار لجميع الأعضاء', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 8),
-              const Text(
-                  'أرسل رسالة فورية لجميع أعضاء الفريق. ستصل كإشعار على أجهزتهم.'),
+              const Text('أرسل رسالة فورية لجميع أعضاء الفريق. ستصل كإشعار على أجهزتهم.'),
               const SizedBox(height: 16),
               TextFormField(
-                controller: _broadcastController,
-                maxLength: 100,
-                decoration: const InputDecoration(
-                  labelText: 'نص الرسالة',
-                  counterText: '',
-                ),
-                validator: (value) => (value?.trim().isEmpty ?? true)
-                    ? 'الرسالة لا يمكن أن تكون فارغة'
-                    : null,
+                controller: _broadcastController, maxLength: 100,
+                decoration: const InputDecoration(labelText: 'نص الرسالة', counterText: ''),
+                validator: (value) => (value?.trim().isEmpty ?? true) ? 'الرسالة لا يمكن أن تكون فارغة' : null,
               ),
               const SizedBox(height: 16),
               ElevatedButton.icon(
-                icon: _isSendingBroadcast
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.send_rounded),
-                label: Text(
-                    _isSendingBroadcast ? 'جاري الإرسال...' : 'إرسال الإشعار'),
+                icon: _isSendingBroadcast ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.send_rounded),
+                label: Text(_isSendingBroadcast ? 'جاري الإرسال...' : 'إرسال الإشعار'),
                 onPressed: _isSendingBroadcast ? null : _sendBroadcast,
               ),
-              const SizedBox(height: 8),
-  //             ElevatedButton.icon(
-  //               icon: const Icon(Icons.bug_report_rounded),
-  //               label: const Text('إرسال إشعار اختبار'),
-  //               onPressed: _sendTestNotification,
-  //               style: ElevatedButton.styleFrom(
-  //                 backgroundColor: Colors.grey.shade800,
-  //                 foregroundColor: Colors.white,
-  //               ),
-  //             ),
-  //             ElevatedButton(
-  // onPressed: () async {
-  //   try {
-  //     await _supabaseService.sendBroadcastNotification("هذا إشعار تجريبي لجميع الأعضاء");
-  //     if (mounted) {
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         SnackBar(content: Text('تم إرسال الإشعار التجريبي'))
-  //       );
-  //     }
-  //   } catch (e) {
-  //     if (mounted) {
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         SnackBar(content: Text('فشل الإرسال: $e'))
-  //       );
-  //     }
-  //   }
-  // },
-  // child: Text('إرسال إشعار تجريبي'),
-// )
-
             ],
           ),
         ),
@@ -528,7 +292,6 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
     );
   }
 
-  // --- NEW: Extracted danger zone to its own widget for clarity ---
   Widget _buildDangerZoneCard() {
     return Padding(
       padding: const EdgeInsets.all(16.0),
@@ -539,8 +302,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('منطقة الخطر',
-                  style: Theme.of(context).textTheme.titleLarge),
+              Text('منطقة الخطر', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 8),
               const Text('الإجراء التالي لا يمكن التراجع عنه.'),
               const SizedBox(height: 16),
@@ -548,10 +310,7 @@ class _HubManagementScreenState extends State<HubManagementScreen> {
                 icon: const Icon(Icons.delete_forever),
                 label: const Text('حذف هذا الـ Hub نهائياً'),
                 onPressed: _deleteHub,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.red.shade700,
-                  foregroundColor: Colors.white,
-                ),
+                style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700, foregroundColor: Colors.white),
               )
             ],
           ),

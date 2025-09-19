@@ -25,6 +25,7 @@ dependencies:
   # supabase_storage: ^0.3.3 # لرفع الملفات إلى Supabase
   flutter_speed_dial: ^7.0.0 
   # Google Fonts for modern UI
+  connectivity_plus: ^7.0.0
   google_fonts: ^6.2.1
   shared_preferences: ^2.2.3
   # For formatting dates

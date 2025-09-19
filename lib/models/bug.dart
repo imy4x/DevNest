@@ -1,5 +1,3 @@
-
-
 class Bug {
   final String id;
   final String title;
@@ -8,7 +6,9 @@ class Bug {
   final String status; // Open, In Progress, Resolved
   final String projectId;
   final DateTime createdAt;
-  final String? source; 
+  final String? source;
+  // --- إضافة: حقل لتخزين أولوية المستخدم الشخصية ---
+  int? userPriority;
 
   Bug({
     required this.id,
@@ -19,6 +19,7 @@ class Bug {
     required this.projectId,
     required this.createdAt,
     this.source,
+    this.userPriority, // تعيينه في المُنشئ
   });
 
   factory Bug.fromJson(Map<String, dynamic> json) {
@@ -31,10 +32,12 @@ class Bug {
       projectId: json['project_id'],
       createdAt: DateTime.parse(json['created_at']),
       source: json['source'],
+      // --- إضافة: قراءة الأولوية من البيانات الإضافية عند جلبها ---
+      userPriority: json['user_priority'],
     );
   }
 
-  Bug copyWith({String? status}) {
+  Bug copyWith({String? status, int? userPriority}) {
     return Bug(
       id: id,
       title: title,
@@ -44,6 +47,11 @@ class Bug {
       projectId: projectId,
       createdAt: createdAt,
       source: source,
+      userPriority: userPriority ?? this.userPriority,
     );
   }
+
+  // --- إضافة: دالة مساعدة للترتيب. الأرقام الأقل هي الأعلى أولوية. ---
+  // العناصر بدون أولوية (null) تأتي في النهاية.
+  int get priorityOrder => userPriority ?? 999;
 }

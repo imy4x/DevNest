@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/supabase_service.dart';
 import 'home_screen.dart';
-// --- إضافة: استيراد نوافذ الحوار ---
 import '../widgets/app_dialogs.dart';
 
 class InitialHubScreen extends StatefulWidget {
@@ -29,8 +28,10 @@ class _InitialHubScreenState extends State<InitialHubScreen> {
     await prefs.setBool('hub_setup_complete', true);
 
     if (mounted) {
+      // ✅ --- (تعديل): تمرير المفتاح العام لـ HomeScreen ---
+      // هذا التغيير يضمن أن خدمة الإشعارات يمكنها العثور على الواجهة الرئيسية والتحكم بها.
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
+        MaterialPageRoute(builder: (context) => HomeScreen(key: homeScreenKey)),
       );
     }
   }
